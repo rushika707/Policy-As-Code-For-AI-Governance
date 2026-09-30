@@ -70,3 +70,7 @@ Thumbs.db
 
 # Private policy document
 policies/AI Training Data PII Policies.pdf
+
+# Generated policy/data files
+extracted_text/*.json
+synthetic_data/synthetic_dataset.xlsx
