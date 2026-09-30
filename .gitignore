@@ -1,0 +1,72 @@
+# ==============================
+# Python
+# ==============================
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+venv/
+.venv/
+env/
+myenv/
+
+# ==============================
+# Secrets
+# ==============================
+.env
+.env.*
+!.env.example
+
+# ==============================
+# Node / Frontend
+# ==============================
+node_modules/
+frontend/node_modules/
+frontend/dist/
+
+# ==============================
+# Local database
+# ==============================
+database/policy_runs.db
+*.db
+*.sqlite
+*.sqlite3
+
+# ==============================
+# Generated output
+# ==============================
+evaluation_results/results.json
+
+# ==============================
+# Uploaded/generated policy files
+# ==============================
+policies/current_policy.pdf
+extracted_text/current_policy.json
+extracted_text/rules.json
+
+# ==============================
+# OPA executable
+# ==============================
+opa/opa.exe
+
+# ==============================
+# Backup files
+# ==============================
+App_backup.jsx
+frontend/src/App_backup.jsx
+
+# ==============================
+# IDE / OS
+# ==============================
+.vscode/
+.DS_Store
+Thumbs.db
+
+# ==============================
+# Logs
+# ==============================
+*.log
+
+# Private policy document
+policies/AI Training Data PII Policies.pdf
