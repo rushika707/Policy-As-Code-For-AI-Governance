@@ -16,9 +16,7 @@ DATASET_PATH = (
 OPA_PATH = (
     BASE_DIR
     / "opa"
-    / "opa.exe"
 )
-
 REGO_PATH = (
     BASE_DIR
     / "policies"
