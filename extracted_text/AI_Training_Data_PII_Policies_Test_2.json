@@ -1,0 +1,15 @@
+{
+  "success": true,
+  "filename": "AI_Training_Data_PII_Policies_Test_2.pdf",
+  "page_count": 2,
+  "pages": [
+    {
+      "page_number": 1,
+      "text": "AI Training Data PII Policy — Rule Tables\n5.1 Direct identifiers\nRule ID\nData type\nExamples\nAction\nPII-101\nUsername or account handle\nusername, account_handle, user_handle\nFlag record\nPII-102\nDate of birth\ndob, birth_date, date_of_birth\nFlag record\nPII-103\nNational ID number\nnational_id, identity_number\nBlock until removed or approved\nPII-104\nDriver licence number\ndriver_licence, licence_number\nBlock until removed or approved\nPII-105\nPostal address\naddress, home_address, postcode\nFlag record\nPII-106\nBank account or card details\nbank_account, card_number, sort_code\nBlock until removed or approved\nPII-107\nDevice or network identifier\ndevice_id, IP address, cookie_id\nFlag record\n5.2 Sensitive personal data\nRule ID\nData type\nExamples\nAction\nSPII-101\nFinancial information\nsalary, income, financial_status\nBlock record\nSPII-102\nHealth information\nmedical_condition, diagnosis, treatment\nBlock record\nSPII-103\nReligious belief\nreligion, belief, faith\nBlock record\nSPII-104\nPolitical affiliation\npolitical_view, party_membership\nBlock record\nSPII-105\nBiometric information\nfingerprint, faceprint, iris_scan\nBlock record\nSPII-106\nGenetic information\nDNA_profile, genetic_marker\nBlock record"
+    },
+    {
+      "page_number": 2,
+      "text": "5.3 Indirect identifiers and combination rules\nRule ID\nCombination / condition\nAction\nCPII-101\nUsername + date of birth\nFlag record\nCPII-102\nUsername + email address\nFlag record\nCPII-103\nDate of birth + gender + postcode\nFlag record\nCPII-104\nEmployee ID + department + job role\nFlag record\nCPII-105\nCustomer ID + transaction reference details where re-identification is possible\nFlag record\nCPII-106\nFree-text feedback containing a personal identifier\nFlag record\nCPII-107\nPhone number + email address\nFlag record\nCPII-108\nPassport number OR national ID number\nBlock record\n5.4 Processing outcomes\nWhere a rule explicitly specifies PASS, FLAG, or BLOCK, the stated outcome must be applied. Rules marked as\nBlock require the affected information to be removed, redacted, or otherwise handled according to the stated policy\nrequirement.\nNote: This is a test policy with intentionally different rule identifiers, terminology, mappings, and logical\ncombinations."
+    }
+  ]
+}
