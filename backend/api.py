@@ -1,12 +1,15 @@
 from pathlib import Path
 import json
 
+import pandas as pd
 import pymupdf
-from fastapi import FastAPI, UploadFile, File
+from dotenv import load_dotenv
+
+load_dotenv()
+from fastapi import FastAPI, UploadFile, File, BackgroundTasks, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-
+from fastapi.responses import FileResponse
 from database.database import initialize_database, save_run, get_runs, get_run
-
 from backend.extraction.extractor import extract_rules
 
 from synthetic_data.synthetic_data_generator import (
@@ -18,6 +21,7 @@ from backend.policy_engine.rego_generator import (
     load_rules,
     generate_rego,
     save_rego,
+    save_policy_results_excel,
 )
 
 from backend.policy_engine.eval import (
@@ -26,10 +30,51 @@ from backend.policy_engine.eval import (
     evaluate_dataset,
     calculate_summary,
     save_results,
+    save_results_excel,
 )
 
 
+
 app = FastAPI()
+
+
+# --------------------------------------------------
+# Policy Processing Jobs
+# --------------------------------------------------
+
+POLICY_JOBS = {}
+
+
+def update_policy_job(
+    job_id,
+    *,
+    status=None,
+    current_step=None,
+    progress=None,
+    message=None,
+    result=None,
+):
+    job = POLICY_JOBS.get(job_id)
+
+    if job is None:
+        return
+
+    if status is not None:
+        job["status"] = status
+
+    if current_step is not None:
+        job["current_step"] = current_step
+
+    if progress is not None:
+        job["progress"] = progress
+
+    if message is not None:
+        job["message"] = message
+
+    if result is not None:
+        job["result"] = result
+
+
 
 
 
@@ -70,10 +115,12 @@ EXTRACTED_TEXT_DIR.mkdir(exist_ok=True)
 
 CURRENT_POLICY_PATH = POLICIES_DIR / "current_policy.pdf"
 CURRENT_TEXT_PATH = EXTRACTED_TEXT_DIR / "current_policy.json"
+POLICY_TEXT_EXCEL_PATH = EXTRACTED_TEXT_DIR / "policy_text.xlsx"
 CURRENT_RULES_PATH = EXTRACTED_TEXT_DIR / "rules.json"
 
 RESULTS_DIR = BASE_DIR / "evaluation_results"
 RESULTS_PATH = RESULTS_DIR / "results.json"
+DASHBOARD_SUMMARY_EXCEL_PATH = RESULTS_DIR / "dashboard_summary.xlsx"
 
 
 # --------------------------------------------------
@@ -173,6 +220,7 @@ def delete_previous_policy():
     files_to_delete = [
         CURRENT_POLICY_PATH,
         CURRENT_TEXT_PATH,
+        POLICY_TEXT_EXCEL_PATH,
         CURRENT_RULES_PATH,
     ]
 
@@ -192,205 +240,246 @@ def delete_previous_policy():
 # --------------------------------------------------
 # PDF Upload + Complete Policy Processing
 # --------------------------------------------------
-@app.post("/upload-policy")
-async def upload_policy(file: UploadFile = File(...)):
 
-    print()
-    print("=" * 60)
-    print("POLICY UPLOAD REQUEST RECEIVED")
-    print("=" * 60)
-
-    print(f"Filename     : {file.filename}")
-    print(f"Content type : {file.content_type}")
-
-    # --------------------------------------------------
-    # Validate PDF
-    # --------------------------------------------------
-
-    if file.content_type != "application/pdf":
-
-        print("ERROR: Uploaded file is not a PDF.")
-
-        return {
-            "success": False,
-            "message": "Only PDF files are supported."
-        }
-
-    print("File type validated: PDF")
-
-    # --------------------------------------------------
-    # Remove previous policy
-    # --------------------------------------------------
-
-    delete_previous_policy()
-
-    # --------------------------------------------------
-    # Read uploaded file
-    # --------------------------------------------------
-
-    file_contents = await file.read()
-
-    print(f"File size    : {len(file_contents)} bytes")
-
-    # --------------------------------------------------
-    # Save uploaded PDF
-    # --------------------------------------------------
-
-    with open(
-        CURRENT_POLICY_PATH,
-        "wb"
-    ) as output_file:
-
-        output_file.write(file_contents)
-
-    print(f"PDF saved to : {CURRENT_POLICY_PATH}")
-
-    # --------------------------------------------------
-    # Open PDF
-    # --------------------------------------------------
-
-    print()
-    print("Opening PDF with PyMuPDF...")
-
-    document = pymupdf.open(CURRENT_POLICY_PATH)
-
-    print(f"Page count   : {len(document)}")
-
-    # --------------------------------------------------
-    # Extract text page-by-page
-    # --------------------------------------------------
-
-    pages = []
-
-    for page_number, page in enumerate(document, start=1):
-
-        print()
-        print(f"Extracting text from page {page_number}...")
-
-        text = page.get_text("text").strip()
-
-        pages.append({
-            "page_number": page_number,
-            "text": text
-        })
-
-        print(f"Characters extracted: {len(text)}")
-
-    document.close()
-
-    # --------------------------------------------------
-    # Build extracted text result
-    # --------------------------------------------------
-
-    extracted_text_result = {
-        "success": True,
-        "filename": file.filename,
-        "page_count": len(pages),
-        "pages": pages
-    }
-
-    # --------------------------------------------------
-    # Save extracted text
-    # --------------------------------------------------
-
-    with open(
-        CURRENT_TEXT_PATH,
-        "w",
-        encoding="utf-8"
-    ) as json_file:
-
-        json.dump(
-            extracted_text_result,
-            json_file,
-            indent=2,
-            ensure_ascii=False
-        )
-
-    print()
-    print(f"Extracted text saved to: {CURRENT_TEXT_PATH}")
-
-    # --------------------------------------------------
-    # Combine page text
-    # --------------------------------------------------
-
-    policy_text = "\n\n".join(
-        page["text"]
-        for page in pages
-    )
-
-    print()
-    print(
-        f"Combined policy text length: "
-        f"{len(policy_text)} characters"
-    )
-
-    # --------------------------------------------------
-    # Extract Policy Rules
-    # --------------------------------------------------
-
-    print()
-    print("=" * 60)
-    print("STARTING POLICY RULE EXTRACTION")
-    print("=" * 60)
-
+def process_policy_upload(
+    job_id,
+    original_filename,
+):
     try:
 
-        rules_result = extract_rules(policy_text)
+        # --------------------------------------------------
+        # PDF INGESTION
+        # --------------------------------------------------
 
-    except Exception as error:
+        update_policy_job(
+            job_id,
+            status="processing",
+            current_step="PDF Ingestion",
+            progress=5,
+            message="Reading and extracting text from the uploaded PDF.",
+        )
+
+        document = pymupdf.open(
+            CURRENT_POLICY_PATH
+        )
+
+        print()
+        print("Opening PDF with PyMuPDF...")
+        print(f"Page count   : {len(document)}")
+
+        pages = []
+
+        for page_number, page in enumerate(
+            document,
+            start=1
+        ):
+
+            print()
+            print(
+                f"Extracting text from page "
+                f"{page_number}..."
+            )
+
+            text = page.get_text(
+                "text"
+            ).strip()
+
+            pages.append({
+                "page_number": page_number,
+                "text": text
+            })
+
+            print(
+                f"Characters extracted: "
+                f"{len(text)}"
+            )
+
+        document.close()
+
+        extracted_text_result = {
+            "success": True,
+            "filename": original_filename,
+            "page_count": len(pages),
+            "pages": pages
+        }
+
+        with open(
+            CURRENT_TEXT_PATH,
+            "w",
+            encoding="utf-8"
+        ) as json_file:
+
+            json.dump(
+                extracted_text_result,
+                json_file,
+                indent=2,
+                ensure_ascii=False
+            )
+
+        print()
+        print(
+            f"Extracted text saved to: "
+            f"{CURRENT_TEXT_PATH}"
+        )
+
+        policy_text_dataframe = pd.DataFrame(
+            pages,
+            columns=["page_number", "text"],
+        )
+
+        with pd.ExcelWriter(
+            POLICY_TEXT_EXCEL_PATH,
+            engine="openpyxl",
+        ) as writer:
+
+            policy_text_dataframe.to_excel(
+                writer,
+                sheet_name="Policy Text",
+                index=False,
+            )
+
+            worksheet = writer.sheets["Policy Text"]
+            worksheet.freeze_panes = "A2"
+            worksheet.column_dimensions["A"].width = 15
+            worksheet.column_dimensions["B"].width = 100
+
+            for cell in worksheet[1]:
+                cell.font = cell.font.copy(bold=True)
+                cell.alignment = cell.alignment.copy(
+                    horizontal="center",
+                    vertical="center",
+                    wrap_text=True,
+                )
+
+            for row in worksheet.iter_rows(min_row=2):
+                for cell in row:
+                    cell.alignment = cell.alignment.copy(
+                        vertical="top",
+                        wrap_text=True,
+                    )
+
+        print(
+            f"Policy text Excel saved to: "
+            f"{POLICY_TEXT_EXCEL_PATH}"
+        )
+
+        update_policy_job(
+            job_id,
+            current_step="PDF Ingestion",
+            progress=15,
+            message="PDF text extraction and Excel export completed.",
+        )
+
+        # --------------------------------------------------
+        # COMBINE POLICY TEXT
+        # --------------------------------------------------
+
+        policy_text = "\n\n".join(
+            page["text"]
+            for page in pages
+        )
+
+        print()
+        print(
+            f"Combined policy text length: "
+            f"{len(policy_text)} characters"
+        )
+
+        # --------------------------------------------------
+        # RULE EXTRACTION
+        # --------------------------------------------------
+
+        update_policy_job(
+            job_id,
+            current_step="Rule Extraction",
+            progress=20,
+            message="Extracting PII, SPII and CPII rules.",
+        )
 
         print()
         print("=" * 60)
-        print("RULE EXTRACTION FAILED")
+        print("STARTING POLICY RULE EXTRACTION")
         print("=" * 60)
 
-        print(f"Error: {error}")
-
-        if CURRENT_POLICY_PATH.exists():
-            CURRENT_POLICY_PATH.unlink()
-
-        if CURRENT_TEXT_PATH.exists():
-            CURRENT_TEXT_PATH.unlink()
-
-        return {
-            "success": False,
-            "message": f"Policy rule extraction failed: {str(error)}"
-        }
-
-    # --------------------------------------------------
-    # Save Extracted Rules
-    # --------------------------------------------------
-
-    with open(
-        CURRENT_RULES_PATH,
-        "w",
-        encoding="utf-8"
-    ) as rules_file:
-
-        json.dump(
-            rules_result,
-            rules_file,
-            indent=2,
-            ensure_ascii=False
+        rules_result = extract_rules(
+            policy_text
         )
 
-    print()
-    print(f"Rules saved to: {CURRENT_RULES_PATH}")
+        with open(
+            CURRENT_RULES_PATH,
+            "w",
+            encoding="utf-8"
+        ) as rules_file:
 
-    rule_count = len(
-        rules_result.get("rules", [])
-    )
+            json.dump(
+                rules_result,
+                rules_file,
+                indent=2,
+                ensure_ascii=False
+            )
 
-    # --------------------------------------------------
-    # Generate Rego Policy
-    # --------------------------------------------------
+        print()
+        print(
+            f"Rules saved to: "
+            f"{CURRENT_RULES_PATH}"
+        )
 
-    print()
-    print("=" * 60)
-    print("GENERATING REGO POLICY")
-    print("=" * 60)
+        rule_count = len(
+            rules_result.get("rules", [])
+        )
 
-    try:
+        # --------------------------------------------------
+        # RULE VALIDATION
+        # --------------------------------------------------
+
+        update_policy_job(
+            job_id,
+            current_step="Rule Validation",
+            progress=35,
+            message=(
+                f"Validated {rule_count} extracted "
+                "PII, SPII and CPII rules."
+            ),
+        )
+
+        # --------------------------------------------------
+        # RULES EXCEL
+        # --------------------------------------------------
+
+        update_policy_job(
+            job_id,
+            current_step="Rules Excel",
+            progress=42,
+            message="Saving the extracted rules Excel workbook.",
+        )
+
+        rules_excel_path = (
+            BASE_DIR
+            / "extracted_text"
+            / "rules.xlsx"
+        )
+
+        if not rules_excel_path.exists():
+
+            raise RuntimeError(
+                "Rules Excel file was not generated."
+            )
+
+        # --------------------------------------------------
+        # GENERATE REGO POLICY
+        # --------------------------------------------------
+
+        update_policy_job(
+            job_id,
+            current_step="Rego Generation",
+            progress=50,
+            message="Generating the executable Rego policy.",
+        )
+
+        print()
+        print("=" * 60)
+        print("GENERATING REGO POLICY")
+        print("=" * 60)
 
         extracted_rules = load_rules()
 
@@ -402,33 +491,53 @@ async def upload_policy(file: UploadFile = File(...)):
             rego_policy
         )
 
-        print("Rego policy generated successfully.")
+        print(
+            "Rego policy generated successfully."
+        )
 
-    except Exception as error:
+        # --------------------------------------------------
+        # POLICY RESULTS EXCEL
+        # --------------------------------------------------
+
+        update_policy_job(
+            job_id,
+            current_step="Policy Results Excel",
+            progress=62,
+            message="Saving policy rule outcomes to Excel.",
+        )
+
+        save_policy_results_excel(
+            extracted_rules
+        )
+
+        policy_results_excel_path = (
+            BASE_DIR
+            / "policies"
+            / "rego"
+            / "policy_results.xlsx"
+        )
+
+        if not policy_results_excel_path.exists():
+
+            raise RuntimeError(
+                "Policy results Excel file was not generated."
+            )
+
+        # --------------------------------------------------
+        # OPA DATASET EVALUATION
+        # --------------------------------------------------
+
+        update_policy_job(
+            job_id,
+            current_step="OPA Evaluation",
+            progress=70,
+            message="Evaluating the synthetic dataset with OPA.",
+        )
 
         print()
         print("=" * 60)
-        print("REGO GENERATION FAILED")
+        print("STARTING OPA DATASET EVALUATION")
         print("=" * 60)
-
-        print(f"Error: {error}")
-
-        return {
-            "success": False,
-            "message": f"Rego generation failed: {str(error)}",
-            "rules": rules_result["rules"],
-        }
-
-    # --------------------------------------------------
-    # Evaluate Synthetic Dataset
-    # --------------------------------------------------
-
-    print()
-    print("=" * 60)
-    print("STARTING OPA DATASET EVALUATION")
-    print("=" * 60)
-
-    try:
 
         dataframe = load_dataset()
 
@@ -444,84 +553,350 @@ async def upload_policy(file: UploadFile = File(...)):
             evaluation_results
         )
 
+        # --------------------------------------------------
+        # RESULTS JSON + EXCEL
+        # --------------------------------------------------
+
+        update_policy_job(
+            job_id,
+            current_step="Results Excel",
+            progress=88,
+            message="Saving evaluation results to JSON and Excel.",
+        )
+
         save_results(
             evaluation_results,
             summary
         )
-        
+
+        save_results_excel(
+            evaluation_results,
+            summary
+        )
+
+        results_excel_path = (
+            BASE_DIR
+            / "evaluation_results"
+            / "results.xlsx"
+        )
+
+        if not results_excel_path.exists():
+
+            raise RuntimeError(
+                "Evaluation results Excel file was not generated."
+            )
+
+        # --------------------------------------------------
+        # DATABASE HISTORY
+        # --------------------------------------------------
+
         run_id = save_run(
             records=evaluation_results,
             dataset_name="synthetic_dataset.xlsx",
-            policy_name=file.filename,
+            policy_name=original_filename,
         )
-                
+
+        # --------------------------------------------------
+        # DASHBOARD SUMMARY EXCEL
+        # --------------------------------------------------
+
+        RESULTS_DIR.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        dashboard_summary_dataframe = pd.DataFrame(
+            [
+                {
+                    "Metric": "Run ID",
+                    "Value": run_id,
+                },
+                {
+                    "Metric": "Policy",
+                    "Value": original_filename,
+                },
+                {
+                    "Metric": "Dataset",
+                    "Value": "synthetic_dataset.xlsx",
+                },
+                {
+                    "Metric": "Total Records",
+                    "Value": summary["total_records"],
+                },
+                {
+                    "Metric": "PASS",
+                    "Value": summary["pass"],
+                },
+                {
+                    "Metric": "FLAG",
+                    "Value": summary["flag"],
+                },
+                {
+                    "Metric": "BLOCK",
+                    "Value": summary["block"],
+                },
+                {
+                    "Metric": "Pass Rate",
+                    "Value": f'{summary["pass_rate"]}%',
+                },
+            ]
+        )
+
+        with pd.ExcelWriter(
+            DASHBOARD_SUMMARY_EXCEL_PATH,
+            engine="openpyxl",
+        ) as writer:
+
+            dashboard_summary_dataframe.to_excel(
+                writer,
+                sheet_name="Dashboard Summary",
+                index=False,
+            )
+
+            worksheet = writer.sheets["Dashboard Summary"]
+            worksheet.freeze_panes = "A2"
+            worksheet.column_dimensions["A"].width = 22
+            worksheet.column_dimensions["B"].width = 34
+
+            for cell in worksheet[1]:
+                cell.font = cell.font.copy(bold=True)
+                cell.alignment = cell.alignment.copy(
+                    horizontal="center",
+                    vertical="center",
+                )
+
+            for row in worksheet.iter_rows(min_row=2):
+                for cell in row:
+                    cell.alignment = cell.alignment.copy(
+                        vertical="top",
+                    )
+
+        print(
+            f"Dashboard summary Excel saved to: "
+            f"{DASHBOARD_SUMMARY_EXCEL_PATH}"
+        )
+
+        # --------------------------------------------------
+        # COMPLETE
+        # --------------------------------------------------
+
         print()
-        print("OPA evaluation completed successfully.")
+        print("=" * 60)
+        print("POLICY PROCESSING COMPLETE")
+        print("=" * 60)
+
+        print(
+            f"Uploaded file : {original_filename}"
+        )
+        print(
+            f"Pages         : {len(pages)}"
+        )
+        print(
+            f"Rules         : {rule_count}"
+        )
+        print(
+            f"PASS          : {summary['pass']}"
+        )
+        print(
+            f"FLAG          : {summary['flag']}"
+        )
+        print(
+            f"BLOCK         : {summary['block']}"
+        )
+        print(
+            f"Pass rate     : "
+            f"{summary['pass_rate']}%"
+        )
+
+        result = {
+            "success": True,
+            "message": (
+                "Policy processed successfully."
+            ),
+            "filename": original_filename,
+            "page_count": len(pages),
+            "rule_count": rule_count,
+            "policy_file": str(
+                CURRENT_POLICY_PATH
+            ),
+            "extracted_text_file": str(
+                CURRENT_TEXT_PATH
+            ),
+            "rules_file": str(
+                CURRENT_RULES_PATH
+            ),
+            "dashboard_summary_excel": str(
+                DASHBOARD_SUMMARY_EXCEL_PATH
+            ),
+            "evaluation": {
+                "total_records":
+                    summary["total_records"],
+                "pass":
+                    summary["pass"],
+                "flag":
+                    summary["flag"],
+                "block":
+                    summary["block"],
+                "pass_rate":
+                    summary["pass_rate"],
+            },
+            "run_id": run_id,
+            "rules": rules_result["rules"]
+        }
+
+        update_policy_job(
+            job_id,
+            status="completed",
+            current_step="Dashboard Ready",
+            progress=100,
+            message="Policy evaluation completed successfully.",
+            result=result,
+        )
 
     except Exception as error:
 
         print()
         print("=" * 60)
-        print("OPA EVALUATION FAILED")
+        print("POLICY PROCESSING FAILED")
         print("=" * 60)
 
-        print(f"Error: {error}")
+        print(
+            f"Error: {error}"
+        )
+
+        update_policy_job(
+            job_id,
+            status="failed",
+            current_step="Processing Failed",
+            progress=100,
+            message=str(error),
+            result={
+                "success": False,
+                "message": str(error),
+            },
+        )
+
+
+@app.post("/upload-policy")
+async def upload_policy(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+):
+
+    print()
+    print("=" * 60)
+    print("POLICY UPLOAD REQUEST RECEIVED")
+    print("=" * 60)
+
+    print(
+        f"Filename     : {file.filename}"
+    )
+
+    print(
+        f"Content type : {file.content_type}"
+    )
+
+    # --------------------------------------------------
+    # VALIDATE PDF
+    # --------------------------------------------------
+
+    if file.content_type != "application/pdf":
+
+        print(
+            "ERROR: Uploaded file is not a PDF."
+        )
 
         return {
             "success": False,
-            "message": f"OPA evaluation failed: {str(error)}",
-            "rules": rules_result["rules"],
+            "message": (
+                "Only PDF files are supported."
+            )
         }
 
     # --------------------------------------------------
-    # Final Logging
+    # REMOVE PREVIOUS POLICY
     # --------------------------------------------------
 
-    print()
-    print("=" * 60)
-    print("POLICY PROCESSING COMPLETE")
-    print("=" * 60)
-
-    print(f"Uploaded file : {file.filename}")
-    print(f"Pages         : {len(pages)}")
-    print(f"Rules         : {rule_count}")
-    print(f"PASS          : {summary['pass']}")
-    print(f"FLAG          : {summary['flag']}")
-    print(f"BLOCK         : {summary['block']}")
-    print(f"Pass rate     : {summary['pass_rate']}%")
-    print(f"Policy PDF    : {CURRENT_POLICY_PATH}")
-    print(f"Extracted text: {CURRENT_TEXT_PATH}")
-    print(f"Rules JSON    : {CURRENT_RULES_PATH}")
-    print(f"Results JSON  : {RESULTS_PATH}")
-
-    print("=" * 60)
-    print()
+    delete_previous_policy()
 
     # --------------------------------------------------
-    # Return Response
+    # READ + SAVE UPLOADED PDF
     # --------------------------------------------------
+
+    file_contents = await file.read()
+
+    with open(
+        CURRENT_POLICY_PATH,
+        "wb"
+    ) as output_file:
+
+        output_file.write(
+            file_contents
+        )
+
+    print(
+        f"PDF saved to : "
+        f"{CURRENT_POLICY_PATH}"
+    )
+
+    # --------------------------------------------------
+    # CREATE PROCESSING JOB
+    # --------------------------------------------------
+
+    import uuid
+
+    job_id = str(
+        uuid.uuid4()
+    )
+
+    POLICY_JOBS[job_id] = {
+        "job_id": job_id,
+        "status": "queued",
+        "current_step": "Queued",
+        "progress": 0,
+        "message": (
+            "Policy uploaded. "
+            "Processing will begin shortly."
+        ),
+        "result": None,
+    }
+
+    background_tasks.add_task(
+        process_policy_upload,
+        job_id,
+        file.filename,
+    )
 
     return {
         "success": True,
-        "message": "Policy processed successfully.",
-        "filename": file.filename,
-        "page_count": len(pages),
-        "rule_count": rule_count,
-        "policy_file": str(CURRENT_POLICY_PATH),
-        "extracted_text_file": str(CURRENT_TEXT_PATH),
-        "rules_file": str(CURRENT_RULES_PATH),
-        "evaluation": {
-            "total_records": summary["total_records"],
-            "pass": summary["pass"],
-            "flag": summary["flag"],
-            "block": summary["block"],
-            "pass_rate": summary["pass_rate"],
-        },
-        "run_id": run_id,
-        "rules": rules_result["rules"]
+        "message": (
+            "Policy uploaded and "
+            "processing started."
+        ),
+        "job_id": job_id,
+        "status": "queued",
     }
-    
-    
+
+
+@app.get("/upload-status/{job_id}")
+def get_upload_status(
+    job_id: str,
+):
+
+    job = POLICY_JOBS.get(
+        job_id
+    )
+
+    if job is None:
+
+        raise HTTPException(
+            status_code=404,
+            detail="Policy processing job not found."
+        )
+
+    return job
+
+
 # --------------------------------------------------
 # Evaluation History
 # --------------------------------------------------
@@ -545,3 +920,163 @@ def api_get_run(run_id: int):
         }
 
     return run
+
+@app.get("/download-synthetic-data")
+def download_synthetic_data():
+    file_path = BASE_DIR / "synthetic_data" / "synthetic_dataset.xlsx"
+
+    if not file_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="Synthetic dataset not found."
+        )
+
+    return FileResponse(
+        path=file_path,
+        filename="synthetic_dataset.xlsx",
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+    
+    
+@app.get("/download-results-excel")
+def download_results_excel():
+    results_excel_path = (
+        BASE_DIR
+        / "evaluation_results"
+        / "results.xlsx"
+    )
+
+    if not results_excel_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="Results Excel file not found."
+        )
+
+    return FileResponse(
+        path=results_excel_path,
+        filename="results.xlsx",
+        media_type=(
+            "application/vnd.openxmlformats-officedocument."
+            "spreadsheetml.sheet"
+        ),
+    )
+    
+@app.get("/download-policy-text-excel")
+def download_policy_text_excel():
+    policy_text_excel_path = (
+        BASE_DIR
+        / "extracted_text"
+        / "policy_text.xlsx"
+    )
+
+    if not policy_text_excel_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="Policy text Excel file not found."
+        )
+
+    return FileResponse(
+        path=policy_text_excel_path,
+        filename="policy_text.xlsx",
+        media_type=(
+            "application/vnd.openxmlformats-officedocument."
+            "spreadsheetml.sheet"
+        ),
+    )
+
+
+@app.get("/download-rules-excel")
+def download_rules_excel():
+    rules_excel_path = (
+        BASE_DIR
+        / "extracted_text"
+        / "rules.xlsx"
+    )
+
+    if not rules_excel_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="Rules Excel file not found."
+        )
+
+    return FileResponse(
+        path=rules_excel_path,
+        filename="rules.xlsx",
+        media_type=(
+            "application/vnd.openxmlformats-officedocument."
+            "spreadsheetml.sheet"
+        ),
+    )
+
+
+@app.get("/download-dashboard-summary-excel")
+def download_dashboard_summary_excel():
+    dashboard_summary_path = (
+        BASE_DIR
+        / "evaluation_results"
+        / "dashboard_summary.xlsx"
+    )
+
+    if not dashboard_summary_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="Dashboard summary Excel file not found."
+        )
+
+    return FileResponse(
+        path=dashboard_summary_path,
+        filename="dashboard_summary.xlsx",
+        media_type=(
+            "application/vnd.openxmlformats-officedocument."
+            "spreadsheetml.sheet"
+        ),
+    )
+
+
+@app.get("/download-policy-pdf")
+def download_policy_pdf():
+    policy_pdf_path = (
+        BASE_DIR
+        / "policies"
+        / "current_policy.pdf"
+    )
+
+    if not policy_pdf_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="Current policy PDF not found."
+        )
+
+    return FileResponse(
+        path=policy_pdf_path,
+        filename="current_policy.pdf",
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": 'attachment; filename="current_policy.pdf"'
+        },
+    )
+
+
+@app.get("/download-policy-results-excel")
+def download_policy_results_excel():
+    policy_results_excel_path = (
+        BASE_DIR
+        / "policies"
+        / "rego"
+        / "policy_results.xlsx"
+    )
+
+    if not policy_results_excel_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="Policy results Excel file not found."
+        )
+
+    return FileResponse(
+        path=policy_results_excel_path,
+        filename="policy_results.xlsx",
+        media_type=(
+            "application/vnd.openxmlformats-officedocument."
+            "spreadsheetml.sheet"
+        ),
+    )

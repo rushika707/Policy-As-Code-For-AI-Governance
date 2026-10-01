@@ -4,6 +4,10 @@ from pathlib import Path
 
 import pandas as pd
 
+from openpyxl import load_workbook
+from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+from openpyxl.utils import get_column_letter
+
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
@@ -13,10 +17,10 @@ DATASET_PATH = (
     / "synthetic_dataset.xlsx"
 )
 
-OPA_PATH = (
-    BASE_DIR
-    / "opa"
-)
+if __import__("sys").platform.startswith("win"):
+    OPA_PATH = BASE_DIR / "opa" / "opa.exe"
+else:
+    OPA_PATH = BASE_DIR / "opa"
 REGO_PATH = (
     BASE_DIR
     / "policies"
@@ -34,6 +38,10 @@ RESULTS_PATH = (
     / "results.json"
 )
 
+RESULTS_EXCEL_PATH = (
+    RESULTS_DIR
+    / "results.xlsx"
+)
 
 EXPECTED_COLUMNS = [
     "record_id",
@@ -391,6 +399,340 @@ def save_results(results, summary):
         f"Results saved to: {RESULTS_PATH}"
     )
 
+def save_results_excel(results, summary):
+    """
+    Save the complete synthetic dataset together with four clean
+    OPA-evaluation columns in one Excel sheet.
+
+    The four additional columns are:
+        1. Outcome
+        2. Triggered Rules
+        3. Explanation
+        4. Suggested Remediation
+    """
+
+    RESULTS_DIR.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    # ---------------------------------------------------------
+    # Remediation by dataset column
+    # ---------------------------------------------------------
+
+    remediation_by_column = {
+        "customer_name": "Remove or mask the customer's full name.",
+        "email": "Remove or mask the personal email address.",
+        "phone": "Remove or mask the phone number.",
+        "address": "Remove or generalize the postal/home address.",
+        "dob": "Remove or generalize the date of birth.",
+        "gender": "Remove or generalize gender information where required.",
+        "passport_number": "Remove the passport number completely.",
+        "ni_number": "Remove the National Insurance number completely.",
+        "credit_card_number": "Remove or mask the payment card number.",
+        "bank_account": "Remove or mask the bank account number.",
+        "medical_condition": "Remove the medical information.",
+        "ethnicity": "Remove the ethnicity information.",
+        "religion": "Remove the religion or belief information.",
+        "political_view": "Remove the political opinion information.",
+        "employee_id": "Remove or mask the employee identifier.",
+        "department": "Remove or generalize the department when it contributes to identification.",
+        "job_role": "Remove or generalize the job role when it contributes to identification.",
+        "customer_id": "Remove or mask the customer identifier.",
+        "ip_address": "Remove or mask the IP address.",
+    }
+
+    # ---------------------------------------------------------
+    # Build one flat row per synthetic-data record
+    # ---------------------------------------------------------
+
+    rows = []
+
+    for result in results:
+
+        input_record = result.get("input", {})
+        triggered_rules = result.get("triggered_rules", []) or []
+
+        rule_ids = []
+        explanations = []
+        remediation_items = []
+        seen_remediations = set()
+
+        for rule in triggered_rules:
+
+            rule_id = str(
+                rule.get("rule_id", "")
+            ).strip()
+
+            if rule_id:
+                rule_ids.append(rule_id)
+
+            explanation = str(
+                rule.get("explanation", "")
+            ).strip()
+
+            if explanation:
+                explanations.append(
+                    f"{rule_id}: {explanation}"
+                    if rule_id
+                    else explanation
+                )
+
+            columns = rule.get(
+                "columns",
+                [],
+            )
+
+            if not isinstance(columns, list):
+                columns = [columns]
+
+            for column in columns:
+
+                column = str(column).strip()
+
+                if (
+                    not column
+                    or column not in input_record
+                    or column not in remediation_by_column
+                    or str(input_record.get(column, "")).strip() == ""
+                ):
+                    continue
+
+                if column in seen_remediations:
+                    continue
+
+                seen_remediations.add(column)
+                remediation_items.append(
+                    remediation_by_column[column]
+                )
+
+        row = {}
+
+        # Entire original synthetic dataset
+        for column in EXPECTED_COLUMNS:
+            row[column] = input_record.get(
+                column,
+                "",
+            )
+
+        # -----------------------------------------------------
+        # Exactly four additional evaluation columns
+        # -----------------------------------------------------
+
+        row["Outcome"] = result.get(
+            "outcome",
+            "",
+        )
+
+        row["Triggered Rules"] = (
+            ", ".join(rule_ids)
+            if rule_ids
+            else "No violations"
+        )
+
+        row["Explanation"] = (
+            " | ".join(explanations)
+            if explanations
+            else "No PII or sensitive information detected."
+        )
+
+        row["Suggested Remediation"] = (
+            " | ".join(remediation_items)
+            if remediation_items
+            else "No remediation required."
+        )
+
+        rows.append(row)
+
+    result_columns = EXPECTED_COLUMNS + [
+        "Outcome",
+        "Triggered Rules",
+        "Explanation",
+        "Suggested Remediation",
+    ]
+
+    results_dataframe = pd.DataFrame(
+        rows,
+        columns=result_columns,
+    )
+
+    # ---------------------------------------------------------
+    # SUMMARY SHEET
+    # ---------------------------------------------------------
+
+    summary_dataframe = pd.DataFrame(
+        [
+            ["Total Records", summary["total_records"]],
+            ["PASS", summary["pass"]],
+            ["FLAG", summary["flag"]],
+            ["BLOCK", summary["block"]],
+            ["Pass Rate", f'{summary["pass_rate"]}%'],
+        ],
+        columns=["Metric", "Value"],
+    )
+
+    # ---------------------------------------------------------
+    # WRITE WORKBOOK
+    # ---------------------------------------------------------
+
+    with pd.ExcelWriter(
+        RESULTS_EXCEL_PATH,
+        engine="openpyxl",
+    ) as writer:
+
+        results_dataframe.to_excel(
+            writer,
+            sheet_name="OPA Evaluation",
+            index=False,
+        )
+
+        summary_dataframe.to_excel(
+            writer,
+            sheet_name="Summary",
+            index=False,
+        )
+
+    # ---------------------------------------------------------
+    # FORMAT WORKBOOK
+    # ---------------------------------------------------------
+
+    workbook = load_workbook(
+        RESULTS_EXCEL_PATH
+    )
+
+    header_fill = PatternFill(
+        fill_type="solid",
+        fgColor="1F2937",
+    )
+
+    header_font = Font(
+        bold=True,
+        color="FFFFFF",
+    )
+
+    header_alignment = Alignment(
+        horizontal="center",
+        vertical="center",
+        wrap_text=True,
+    )
+
+    body_alignment = Alignment(
+        vertical="top",
+        wrap_text=True,
+    )
+
+    thin_border = Border(
+        bottom=Side(
+            style="thin",
+            color="D1D5DB",
+        )
+    )
+
+    outcome_fills = {
+        "PASS": PatternFill(
+            fill_type="solid",
+            fgColor="DCFCE7",
+        ),
+        "FLAG": PatternFill(
+            fill_type="solid",
+            fgColor="FEF3C7",
+        ),
+        "BLOCK": PatternFill(
+            fill_type="solid",
+            fgColor="FEE2E2",
+        ),
+    }
+
+    # ---------------------------------------------------------
+    # OPA EVALUATION SHEET
+    # ---------------------------------------------------------
+
+    worksheet = workbook["OPA Evaluation"]
+
+    worksheet.freeze_panes = "A2"
+    worksheet.auto_filter.ref = worksheet.dimensions
+
+    # Default readable widths for all columns
+    for column_index, column in enumerate(
+        result_columns,
+        start=1,
+    ):
+        letter = get_column_letter(column_index)
+
+        if column in {
+            "Outcome",
+        }:
+            width = 14
+        elif column in {
+            "Triggered Rules",
+        }:
+            width = 28
+        elif column in {
+            "Explanation",
+            "Suggested Remediation",
+        }:
+            width = 55
+        elif column == "record_id":
+            width = 12
+        elif column == "feedback":
+            width = 45
+        else:
+            width = 22
+
+        worksheet.column_dimensions[letter].width = width
+
+    for cell in worksheet[1]:
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = header_alignment
+
+    for row in worksheet.iter_rows(min_row=2):
+
+        for cell in row:
+            cell.alignment = body_alignment
+            cell.border = thin_border
+
+        outcome_cell = row[len(EXPECTED_COLUMNS)]
+
+        outcome_fill = outcome_fills.get(
+            str(outcome_cell.value).upper()
+        )
+
+        if outcome_fill:
+            outcome_cell.fill = outcome_fill
+
+    worksheet.row_dimensions[1].height = 34
+
+    # ---------------------------------------------------------
+    # SUMMARY SHEET
+    # ---------------------------------------------------------
+
+    worksheet = workbook["Summary"]
+
+    worksheet.freeze_panes = "A2"
+    worksheet.auto_filter.ref = worksheet.dimensions
+
+    worksheet.column_dimensions["A"].width = 24
+    worksheet.column_dimensions["B"].width = 22
+
+    for cell in worksheet[1]:
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = header_alignment
+
+    for row in worksheet.iter_rows(min_row=2):
+        for cell in row:
+            cell.alignment = body_alignment
+            cell.border = thin_border
+
+    workbook.save(
+        RESULTS_EXCEL_PATH
+    )
+
+    print(
+        f"Clean OPA evaluation Excel saved to: "
+        f"{RESULTS_EXCEL_PATH}"
+    )
 
 def main():
 
@@ -452,7 +794,11 @@ def main():
         results,
         summary,
     )
-
+    
+    save_results_excel(
+    results,
+    summary,
+)
     # ---------------------------------------------------------
     # Print summary
     # ---------------------------------------------------------

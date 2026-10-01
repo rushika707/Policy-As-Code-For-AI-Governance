@@ -1,23 +1,30 @@
 import json
 import math
-import sqlite3
+import os
 from datetime import datetime
-from pathlib import Path
+
+import psycopg
+from psycopg.types.json import Jsonb
 
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-DB_DIR = BASE_DIR / "database"
-DB_PATH = DB_DIR / "policy_runs.db"
-
+# ============================================================
+# DATABASE CONNECTION
+# ============================================================
 
 def get_connection():
-    DB_DIR.mkdir(parents=True, exist_ok=True)
+    database_url = os.getenv("DATABASE_URL")
 
-    connection = sqlite3.connect(DB_PATH)
-    connection.row_factory = sqlite3.Row
+    if not database_url:
+        raise RuntimeError(
+            "DATABASE_URL is not set in the environment."
+        )
 
-    return connection
+    return psycopg.connect(database_url)
 
+
+# ============================================================
+# CLEAN VALUES
+# ============================================================
 
 def clean_value(value):
     if isinstance(value, float) and math.isnan(value):
@@ -27,291 +34,440 @@ def clean_value(value):
 
 
 def clean_record(record):
-    if isinstance(record, dict):
-        return {
-            key: clean_record(value)
-            for key, value in record.items()
-        }
+    cleaned = {}
 
-    if isinstance(record, list):
-        return [
-            clean_record(value)
-            for value in record
-        ]
+    for key, value in record.items():
 
-    return clean_value(record)
+        if isinstance(value, dict):
+            cleaned[key] = clean_record(value)
 
+        elif isinstance(value, list):
+            cleaned[key] = [
+                clean_value(item)
+                for item in value
+            ]
+
+        else:
+            cleaned[key] = clean_value(value)
+
+    return cleaned
+
+
+# ============================================================
+# INITIALIZE DATABASE
+# ============================================================
 
 def initialize_database():
-    connection = get_connection()
-    cursor = connection.cursor()
 
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS runs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            run_number INTEGER NOT NULL,
-            run_date TEXT NOT NULL,
-            policy_name TEXT,
-            dataset_name TEXT NOT NULL,
-            total_records INTEGER NOT NULL,
-            pass_count INTEGER NOT NULL,
-            flag_count INTEGER NOT NULL,
-            block_count INTEGER NOT NULL
-        )
-        """
-    )
+    conn = get_connection()
 
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS run_records (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            run_id INTEGER NOT NULL,
-            record_id TEXT NOT NULL,
-            record_data TEXT NOT NULL,
-            outcome TEXT NOT NULL,
-            triggered_rules TEXT,
-            reason TEXT,
-            remediation TEXT,
-            FOREIGN KEY(run_id)
-                REFERENCES runs(id)
-                ON DELETE CASCADE
-        )
-        """
-    )
+    try:
+        with conn.cursor() as cursor:
 
-    connection.commit()
-    connection.close()
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS runs (
+                    id BIGSERIAL PRIMARY KEY,
+                    run_number INTEGER NOT NULL,
+                    run_date TIMESTAMPTZ NOT NULL,
+                    policy_name TEXT,
+                    dataset_name TEXT NOT NULL,
+                    total_records INTEGER NOT NULL,
+                    pass_count INTEGER NOT NULL,
+                    flag_count INTEGER NOT NULL,
+                    block_count INTEGER NOT NULL
+                )
+            """)
 
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS run_records (
+                    id BIGSERIAL PRIMARY KEY,
+                    run_id BIGINT NOT NULL
+                        REFERENCES runs(id)
+                        ON DELETE CASCADE,
+                    record_id TEXT NOT NULL,
+                    record_data JSONB NOT NULL,
+                    outcome TEXT NOT NULL,
+                    triggered_rules JSONB,
+                    reason TEXT,
+                    remediation TEXT
+                )
+            """)
+
+        conn.commit()
+
+    finally:
+        conn.close()
+
+
+# ============================================================
+# SAVE RUN
+# ============================================================
 
 def save_run(
     records,
     dataset_name,
-    policy_name=None,
+    policy_name="AI Training Data PII Policy"
 ):
-    connection = get_connection()
-    cursor = connection.cursor()
 
-    cursor.execute(
-        """
-        SELECT COALESCE(MAX(run_number), 0) + 1
-        FROM runs
-        """
-    )
+    conn = get_connection()
 
-    run_number = cursor.fetchone()[0]
+    try:
+        with conn.cursor() as cursor:
 
-    total_records = len(records)
+            # ------------------------------------------------
+            # Generate next run number
+            # ------------------------------------------------
 
-    pass_count = sum(
-        1 for record in records
-        if record.get("outcome") == "PASS"
-    )
+            cursor.execute("""
+                SELECT COALESCE(MAX(run_number), 0) + 1
+                FROM runs
+            """)
 
-    flag_count = sum(
-        1 for record in records
-        if record.get("outcome") == "FLAG"
-    )
+            run_number = cursor.fetchone()[0]
 
-    block_count = sum(
-        1 for record in records
-        if record.get("outcome") == "BLOCK"
-    )
+            # ------------------------------------------------
+            # Calculate summary from ACTUAL OPA fields
+            #
+            # Evaluation results contain:
+            #   result["outcome"]
+            #   result["triggered_rules"]
+            #   result["input"]
+            #
+            # They do NOT contain expected_outcome.
+            # ------------------------------------------------
 
-    run_date = datetime.now().isoformat()
+            total_records = len(records)
 
-    cursor.execute(
-        """
-        INSERT INTO runs (
-            run_number,
-            run_date,
-            policy_name,
-            dataset_name,
-            total_records,
-            pass_count,
-            flag_count,
-            block_count
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            run_number,
-            run_date,
-            policy_name,
-            dataset_name,
-            total_records,
-            pass_count,
-            flag_count,
-            block_count,
-        ),
-    )
+            pass_count = sum(
+                1
+                for record in records
+                if record.get("outcome") == "PASS"
+            )
 
-    run_id = cursor.lastrowid
+            flag_count = sum(
+                1
+                for record in records
+                if record.get("outcome") == "FLAG"
+            )
 
-    for record in records:
-        record_data = {
-            "record_id": record.get("record_id"),
-            **record.get("input", {}),
-        }
+            block_count = sum(
+                1
+                for record in records
+                if record.get("outcome") == "BLOCK"
+            )
 
-        triggered_rules = record.get(
-            "triggered_rules",
-            [],
-        )
+            run_date = datetime.now().astimezone()
 
-        reason_list = [
-            rule.get("explanation", "")
-            for rule in triggered_rules
-            if rule.get("explanation")
+            # ------------------------------------------------
+            # Insert run
+            # ------------------------------------------------
+
+            cursor.execute("""
+                INSERT INTO runs (
+                    run_number,
+                    run_date,
+                    policy_name,
+                    dataset_name,
+                    total_records,
+                    pass_count,
+                    flag_count,
+                    block_count
+                )
+                VALUES (
+                    %s, %s, %s, %s,
+                    %s, %s, %s, %s
+                )
+                RETURNING id
+            """, (
+                run_number,
+                run_date,
+                policy_name,
+                dataset_name,
+                total_records,
+                pass_count,
+                flag_count,
+                block_count,
+            ))
+
+            run_id = cursor.fetchone()[0]
+
+            # ------------------------------------------------
+            # Insert evaluated records
+            # ------------------------------------------------
+
+            for result in records:
+
+                input_record = result.get(
+                    "input",
+                    {}
+                )
+
+                input_record = clean_record(
+                    dict(input_record)
+                )
+
+                triggered_rules = result.get(
+                    "triggered_rules",
+                    []
+                )
+
+                triggered_rule_ids = result.get(
+                    "triggered_rule_ids",
+                    []
+                )
+
+                # Keep the complete triggered-rule objects
+                # in JSONB. Add rule IDs if necessary.
+                stored_rules = []
+
+                for rule in triggered_rules:
+
+                    rule_copy = dict(rule)
+
+                    stored_rules.append(
+                        rule_copy
+                    )
+
+                # Store a compact structure containing
+                # both rule IDs and complete rule details.
+                triggered_rules_data = {
+                    "rule_ids": triggered_rule_ids,
+                    "rules": stored_rules,
+                }
+
+                cursor.execute("""
+                    INSERT INTO run_records (
+                        run_id,
+                        record_id,
+                        record_data,
+                        outcome,
+                        triggered_rules,
+                        reason,
+                        remediation
+                    )
+                    VALUES (
+                        %s, %s, %s, %s,
+                        %s, %s, %s
+                    )
+                """, (
+                    run_id,
+                    str(result.get("record_id")),
+                    Jsonb(input_record),
+                    result.get(
+                        "outcome",
+                        "PASS"
+                    ),
+                    Jsonb(triggered_rules_data),
+                    "",
+                    "",
+                ))
+
+        conn.commit()
+
+        return run_id
+
+    except Exception:
+        conn.rollback()
+        raise
+
+    finally:
+        conn.close()
+
+
+# ============================================================
+# GET ALL RUNS
+# ============================================================
+
+def get_runs():
+
+    conn = get_connection()
+
+    try:
+        with conn.cursor() as cursor:
+
+            cursor.execute("""
+                SELECT
+                    id,
+                    run_number,
+                    run_date,
+                    policy_name,
+                    dataset_name,
+                    total_records,
+                    pass_count,
+                    flag_count,
+                    block_count
+                FROM runs
+                ORDER BY run_number DESC
+            """)
+
+            rows = cursor.fetchall()
+
+            columns = [
+                description.name
+                for description in cursor.description
+            ]
+
+        return [
+            dict(zip(columns, row))
+            for row in rows
         ]
 
-        remediation_list = [
-            rule.get("remediation", "")
-            for rule in triggered_rules
-            if rule.get("remediation")
-        ]
+    finally:
+        conn.close()
 
-        cursor.execute(
-            """
-            INSERT INTO run_records (
-                run_id,
+
+# ============================================================
+# GET ONE COMPLETE RUN
+# ============================================================
+
+def get_run(run_id):
+
+    conn = get_connection()
+
+    try:
+        with conn.cursor() as cursor:
+
+            # ------------------------------------------------
+            # Run metadata
+            # ------------------------------------------------
+
+            cursor.execute("""
+                SELECT
+                    id,
+                    run_number,
+                    run_date,
+                    policy_name,
+                    dataset_name,
+                    total_records,
+                    pass_count,
+                    flag_count,
+                    block_count
+                FROM runs
+                WHERE id = %s
+            """, (run_id,))
+
+            run = cursor.fetchone()
+
+            if run is None:
+                return None
+
+            run_columns = [
+                description.name
+                for description in cursor.description
+            ]
+
+            # ------------------------------------------------
+            # Evaluated records
+            # ------------------------------------------------
+
+            cursor.execute("""
+                SELECT
+                    record_id,
+                    record_data,
+                    outcome,
+                    triggered_rules
+                FROM run_records
+                WHERE run_id = %s
+                ORDER BY record_id::INTEGER
+            """, (run_id,))
+
+            record_rows = cursor.fetchall()
+
+        run_data = dict(
+            zip(run_columns, run)
+        )
+
+        run_data["records"] = []
+
+        for row in record_rows:
+
+            (
                 record_id,
                 record_data,
                 outcome,
-                triggered_rules,
-                reason,
-                remediation
+                triggered_rules_data,
+            ) = row
+
+            record_data = (
+                dict(record_data)
+                if isinstance(record_data, dict)
+                else json.loads(record_data)
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                run_id,
-                str(record.get("record_id")),
-                json.dumps(
-                    clean_record(record_data),
-                    ensure_ascii=False,
+
+            triggered_rule_ids = []
+            triggered_rules = []
+
+            if triggered_rules_data:
+
+                if isinstance(
+                    triggered_rules_data,
+                    dict
+                ):
+                    triggered_rule_ids = (
+                        triggered_rules_data.get(
+                            "rule_ids",
+                            []
+                        )
+                    )
+
+                    triggered_rules = (
+                        triggered_rules_data.get(
+                            "rules",
+                            []
+                        )
+                    )
+
+                elif isinstance(
+                    triggered_rules_data,
+                    list
+                ):
+                    triggered_rules = (
+                        triggered_rules_data
+                    )
+
+                    triggered_rule_ids = [
+                        rule.get("rule_id")
+                        for rule in triggered_rules
+                        if isinstance(rule, dict)
+                        and rule.get("rule_id")
+                    ]
+
+            record = {
+                "record_id": str(record_id),
+                "outcome": outcome,
+                "triggered_rule_ids": (
+                    triggered_rule_ids
                 ),
-                record.get("outcome"),
-                json.dumps(
-                    clean_record(triggered_rules),
-                    ensure_ascii=False,
-                ),
-                json.dumps(
-                    reason_list,
-                    ensure_ascii=False,
-                ),
-                json.dumps(
-                    remediation_list,
-                    ensure_ascii=False,
-                ),
-            ),
-        )
-
-    connection.commit()
-    connection.close()
-
-    return run_id
-
-
-def get_runs():
-    connection = get_connection()
-    cursor = connection.cursor()
-
-    cursor.execute(
-        """
-        SELECT *
-        FROM runs
-        ORDER BY run_number DESC
-        """
-    )
-
-    rows = cursor.fetchall()
-    connection.close()
-
-    return [dict(row) for row in rows]
-
-
-def get_run(run_id):
-    connection = get_connection()
-    cursor = connection.cursor()
-
-    cursor.execute(
-        """
-        SELECT *
-        FROM runs
-        WHERE id = ?
-        """,
-        (run_id,),
-    )
-
-    run_row = cursor.fetchone()
-
-    if run_row is None:
-        connection.close()
-        return None
-
-    run = dict(run_row)
-
-    cursor.execute(
-        """
-        SELECT *
-        FROM run_records
-        WHERE run_id = ?
-        ORDER BY id
-        """,
-        (run_id,),
-    )
-
-    record_rows = cursor.fetchall()
-    connection.close()
-
-    records = []
-
-    for row in record_rows:
-        record = dict(row)
-
-        input_data = json.loads(
-            record["record_data"]
-        )
-
-        triggered_rules = json.loads(
-            record["triggered_rules"] or "[]"
-        )
-
-        reasons = json.loads(
-            record["reason"] or "[]"
-        )
-
-        remediations = json.loads(
-            record["remediation"] or "[]"
-        )
-
-        records.append(
-            {
-                "record_id": record["record_id"],
-                "outcome": record["outcome"],
-                "triggered_rule_ids": [
-                    rule.get("rule_id")
-                    for rule in triggered_rules
-                    if rule.get("rule_id")
-                ],
                 "triggered_categories": [
                     rule.get("category")
                     for rule in triggered_rules
-                    if rule.get("category")
+                    if isinstance(rule, dict)
+                    and rule.get("category")
                 ],
                 "triggered_rules": triggered_rules,
-                "input": input_data,
-                "reason": reasons,
-                "remediation": remediations,
+                "input": clean_record(
+                    record_data
+                ),
             }
-        )
 
-    run["records"] = records
+            run_data["records"].append(
+                record
+            )
 
-    return run
+        return run_data
 
+    finally:
+        conn.close()
+
+
+# ============================================================
+# DIRECT TEST
+# ============================================================
 
 if __name__ == "__main__":
+
     initialize_database()
-    print(f"Database initialized: {DB_PATH}")
+
+    print("=" * 60)
+    print("SUPABASE POSTGRESQL DATABASE INITIALIZED")
+    print("=" * 60)

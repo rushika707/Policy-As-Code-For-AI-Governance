@@ -1,9 +1,9 @@
 import json
 import os
-
+from pathlib import Path
 from dotenv import load_dotenv
 from openai import OpenAI
-
+import pandas as pd
 from config.rule_schema import RULE_SCHEMA
 from config.dataset_schema import POLICY_MAPPABLE_COLUMNS
 from backend.extraction.prompt import (
@@ -18,6 +18,13 @@ load_dotenv()
 
 MODEL_NAME = "gpt-5.6-luna"
 
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
+
+RULES_EXCEL_PATH = (
+    BASE_DIR
+    / "extracted_text"
+    / "rules.xlsx"
+)
 
 def extract_rules(policy_text: str) -> dict:
     """
@@ -102,6 +109,7 @@ def extract_rules(policy_text: str) -> dict:
     result = json.loads(
         response.output_text
     )
+    save_rules_excel(result)
 
     print(
         f"Rules extracted: "
@@ -125,3 +133,110 @@ def extract_rules(policy_text: str) -> dict:
     print("=" * 60)
 
     return result
+
+def save_rules_excel(result: dict):
+    """
+    Save the complete LLM-generated rules JSON
+    into a properly formatted Excel workbook.
+    """
+
+    RULES_EXCEL_PATH.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    rows = []
+
+    for rule in result.get("rules", []):
+        row = {}
+
+        for key, value in rule.items():
+
+            if isinstance(value, (dict, list)):
+                row[key] = json.dumps(
+                    value,
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            else:
+                row[key] = value
+
+        rows.append(row)
+
+    dataframe = pd.DataFrame(rows)
+
+    with pd.ExcelWriter(
+        RULES_EXCEL_PATH,
+        engine="openpyxl",
+    ) as writer:
+
+        dataframe.to_excel(
+            writer,
+            sheet_name="Rules",
+            index=False,
+        )
+
+        worksheet = writer.sheets["Rules"]
+
+        # ----------------------------------------------------
+        # Freeze header row
+        # ----------------------------------------------------
+
+        worksheet.freeze_panes = "A2"
+
+        # ----------------------------------------------------
+        # Fixed column widths
+        # ----------------------------------------------------
+
+        column_widths = {
+            "A": 12,   # rule_id
+            "B": 12,   # category
+            "C": 35,   # description
+            "D": 35,   # policy_terms
+            "E": 22,   # columns
+            "F": 50,   # condition
+            "G": 12,   # outcome
+            "H": 40,   # explanation
+            "I": 40,   # remediation
+        }
+
+        for column, width in column_widths.items():
+            worksheet.column_dimensions[column].width = width
+
+        # ----------------------------------------------------
+        # Header formatting
+        # ----------------------------------------------------
+
+        for cell in worksheet[1]:
+            cell.font = cell.font.copy(
+                bold=True
+            )
+            cell.alignment = cell.alignment.copy(
+                horizontal="center",
+                vertical="center",
+                wrap_text=True,
+            )
+
+        # ----------------------------------------------------
+        # Data cell formatting
+        # ----------------------------------------------------
+
+        for row in worksheet.iter_rows(
+            min_row=2
+        ):
+            for cell in row:
+                cell.alignment = cell.alignment.copy(
+                    vertical="top",
+                    wrap_text=True,
+                )
+
+        # ----------------------------------------------------
+        # Header row height
+        # ----------------------------------------------------
+
+        worksheet.row_dimensions[1].height = 25
+
+    print(
+        f"Formatted rules Excel saved to: "
+        f"{RULES_EXCEL_PATH}"
+    )

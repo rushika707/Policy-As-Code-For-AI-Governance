@@ -90,7 +90,10 @@ function App() {
 
   const [file, setFile] = useState(null);
   const [isUploading, setIsUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadStep, setUploadStep] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
+  const [syntheticDataReady, setSyntheticDataReady] = useState(false);
 
   // ==========================================
   // DASHBOARD
@@ -132,7 +135,7 @@ function App() {
   // UPLOAD POLICY
   // ==========================================
 
-  const handleUpload = async () => {
+const handleUpload = async () => {
     if (!file) {
       alert("Please select a PDF first.");
       return;
@@ -143,6 +146,8 @@ function App() {
 
     try {
       setIsUploading(true);
+      setUploadProgress(5);
+      setUploadStep("Uploading policy...");
 
       const response = await fetch(
         `${API_BASE}/upload-policy`,
@@ -160,75 +165,201 @@ function App() {
 
       console.log("Policy upload response:", result);
 
-      alert(
-        `Policy uploaded successfully: ${result.filename}`
-      );
+      if (!result.success || !result.job_id) {
+        throw new Error(
+          result.message ||
+            "Policy processing could not be started."
+        );
+      }
 
-      setPage("dashboard");
-      await loadDashboard();
+      const jobId = result.job_id;
+
+      setUploadProgress(5);
+      setUploadStep("Policy upload complete. Starting processing...");
+
+      let completed = false;
+
+      while (!completed) {
+        await new Promise(
+          (resolve) => setTimeout(resolve, 1000)
+        );
+
+        const statusResponse = await fetch(
+          `${API_BASE}/upload-status/${jobId}`
+        );
+
+        if (!statusResponse.ok) {
+          throw new Error(
+            "Failed to check policy processing status."
+          );
+        }
+
+        const statusResult = await statusResponse.json();
+
+        console.log("Policy processing status:", statusResult);
+
+        if (typeof statusResult.progress === "number") {
+          setUploadProgress(statusResult.progress);
+        }
+
+        if (statusResult.current_step) {
+          setUploadStep(statusResult.current_step);
+        } else if (statusResult.message) {
+          setUploadStep(statusResult.message);
+        }
+
+        if (statusResult.status === "completed") {
+          completed = true;
+          setUploadProgress(100);
+          setUploadStep("Processing complete. Loading dashboard...");
+
+          setPage("dashboard");
+          await loadDashboard();
+        } else if (statusResult.status === "failed") {
+          throw new Error(
+            statusResult.message ||
+              "Policy processing failed."
+          );
+        }
+      }
     } catch (error) {
       console.error("Upload error:", error);
 
+      setUploadStep("");
+
       alert(
-        error.message || "Failed to upload the PDF."
+        error.message ||
+          "Failed to upload the PDF."
       );
     } finally {
       setIsUploading(false);
     }
   };
 
+
   // ==========================================
   // GENERATE SYNTHETIC DATA
   // ==========================================
 
   const handleGenerateData = async () => {
-    try {
-      setIsGenerating(true);
+  try {
+    setIsGenerating(true);
 
-      const response = await fetch(
-        `${API_BASE}/generate-data`,
-        {
-          method: "POST",
-        }
-      );
-
-      if (!response.ok) {
-        throw new Error(
-          "Synthetic data generation failed."
-        );
+    const response = await fetch(
+      `${API_BASE}/generate-data`,
+      {
+        method: "POST",
       }
+    );
 
-      const result = await response.json();
-
-      console.log(
-        "Synthetic data response:",
-        result
+    if (!response.ok) {
+      throw new Error(
+        "Synthetic data generation failed."
       );
-
-      if (!result.success) {
-        throw new Error(
-          result.message ||
-            "Synthetic data generation failed."
-        );
-      }
-
-      alert(
-        `Synthetic dataset generated successfully: ${result.records} records`
-      );
-    } catch (error) {
-      console.error(
-        "Synthetic data generation error:",
-        error
-      );
-
-      alert(
-        error.message ||
-          "Failed to generate synthetic data."
-      );
-    } finally {
-      setIsGenerating(false);
     }
-  };
+
+    const result = await response.json();
+
+    console.log(
+      "Synthetic data response:",
+      result
+    );
+
+    if (!result.success) {
+      throw new Error(
+        result.message ||
+          "Synthetic data generation failed."
+      );
+    }
+
+    setSyntheticDataReady(true);
+
+    alert(
+      `Synthetic dataset generated successfully: ${result.records} records`
+    );
+  } catch (error) {
+    console.error(
+      "Synthetic data generation error:",
+      error
+    );
+
+    alert(
+      error.message ||
+        "Failed to generate synthetic data."
+    );
+  } finally {
+    setIsGenerating(false);
+  }
+};
+
+  const handleDownloadSyntheticData = () => {
+  window.open(
+    `${API_BASE}/download-synthetic-data`,
+    "_blank"
+  );
+};
+
+const handleDownloadPolicyResultsExcel = () => {
+  window.open(
+    `${API_BASE}/download-policy-results-excel`,
+    "_blank"
+  );
+};
+
+const handleDownloadPolicyPdf = async () => {
+  try {
+    const response = await fetch(`${API_BASE}/download-policy-pdf`);
+
+    if (!response.ok) {
+      throw new Error("Failed to download the policy PDF.");
+    }
+
+    const blob = await response.blob();
+    const downloadUrl = window.URL.createObjectURL(blob);
+    const link = document.createElement("a");
+
+    link.href = downloadUrl;
+    link.download = currentRun?.policy_name || "current_policy.pdf";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+
+    window.URL.revokeObjectURL(downloadUrl);
+  } catch (error) {
+    console.error("Policy PDF download error:", error);
+    alert(error.message || "Failed to download the policy PDF.");
+  }
+};
+
+
+const handleDownloadPolicyTextExcel = () => {
+  window.open(
+    `${API_BASE}/download-policy-text-excel`,
+    "_blank"
+  );
+};
+
+const handleDownloadRulesExcel = () => {
+  window.open(
+    `${API_BASE}/download-rules-excel`,
+    "_blank"
+  );
+};
+
+const handleDownloadResultsExcel = () => {
+  window.open(
+    `${API_BASE}/download-results-excel`,
+    "_blank"
+  );
+};
+
+const handleDownloadDashboardSummaryExcel = () => {
+  window.open(
+    `${API_BASE}/download-dashboard-summary-excel`,
+    "_blank"
+  );
+};
+
 
   // ==========================================
   // LOAD DASHBOARD
@@ -595,6 +726,128 @@ function App() {
     );
   };
 
+  const getWorkflowStatus = (step) => {
+    if (step === "synthetic") {
+      return syntheticDataReady ? "completed" : "pending";
+    }
+
+    if (!isUploading && uploadProgress === 0) {
+      return "pending";
+    }
+
+    const thresholds = {
+      ingestion: 15,
+      rules: 42,
+      rego: 62,
+      opa: 88,
+      dashboard: 100,
+    };
+
+    if (uploadProgress >= thresholds[step]) {
+      return "completed";
+    }
+
+    if (step === "ingestion" && uploadProgress > 0) {
+      return "processing";
+    }
+
+    if (step === "rules" && uploadProgress >= 20) {
+      return "processing";
+    }
+
+    if (step === "rego" && uploadProgress >= 50) {
+      return "processing";
+    }
+
+    if (step === "opa" && uploadProgress >= 70) {
+      return "processing";
+    }
+
+    if (step === "dashboard" && uploadProgress >= 88) {
+      return "processing";
+    }
+
+    return "pending";
+  };
+
+  const workflowSteps = [
+    {
+      key: "synthetic",
+      number: 1,
+      title: "Generate Synthetic Data",
+      description: "Create the fixed 250-record evaluation dataset.",
+      downloadLabel: "Download Excel",
+      download: handleDownloadSyntheticData,
+    },
+    {
+      key: "ingestion",
+      number: 2,
+      title: "PDF Ingestion & Text Extraction",
+      description: "Read the uploaded policy PDF page by page and extract text.",
+      downloadLabel: "Download Excel",
+      download: handleDownloadPolicyTextExcel,
+    },
+    {
+      key: "rules",
+      number: 3,
+      title: "Rule Extraction & Validation",
+      description: "Extract and validate only PII, SPII and CPII rules.",
+      downloadLabel: "Download Excel",
+      download: handleDownloadRulesExcel,
+    },
+    {
+      key: "rego",
+      number: 4,
+      title: "Rego Policy Generation",
+      description: "Convert the validated rules into the executable Rego policy.",
+      downloadLabel: "Download Excel",
+      download: handleDownloadPolicyResultsExcel,
+    },
+    {
+      key: "opa",
+      number: 5,
+      title: "OPA Evaluation",
+      description: "Evaluate all synthetic records against the generated policy.",
+      downloadLabel: "Download Excel",
+      download: handleDownloadResultsExcel,
+    },
+    {
+      key: "dashboard",
+      number: 6,
+      title: "Results & Dashboard",
+      description: "Store the run and present PASS, FLAG and BLOCK results.",
+      downloadLabel: "Download Excel",
+      download: handleDownloadDashboardSummaryExcel,
+    },
+  ];
+
+  const workflowStatusLabel = {
+    pending: "Pending",
+    processing: "In Progress",
+    completed: "Completed",
+  };
+
+  const workflowStatusStyle = {
+    pending: {
+      background: "#f8fafc",
+      border: "#cbd5e1",
+      color: "#64748b",
+    },
+    processing: {
+      background: "#eff6ff",
+      border: "#93c5fd",
+      color: "#2563eb",
+    },
+    completed: {
+      background: "#f0fdf4",
+      border: "#86efac",
+      color: "#16a34a",
+    },
+  };
+
+  const workflowDownloadReady = (status) =>
+    status === "completed";
+
   // ==========================================
   // PAGE 1 — UPLOAD
   // ==========================================
@@ -674,27 +927,200 @@ function App() {
           >
 
             {isUploading
-              ? "Uploading..."
+              ? `Processing... ${uploadProgress}%`
               : "Upload Policy"}
 
           </button>
 
+          {isUploading && (
+            <div
+              style={{
+                width: "100%",
+                marginTop: "12px",
+              }}
+            >
+              <div
+                style={{
+                  width: "100%",
+                  height: "8px",
+                  background: "#e5e7eb",
+                  borderRadius: "999px",
+                  overflow: "hidden",
+                }}
+              >
+                <div
+                  style={{
+                    width: `${uploadProgress}%`,
+                    height: "100%",
+                    background: "#2563eb",
+                    borderRadius: "999px",
+                    transition: "width 0.3s ease",
+                  }}
+                />
+              </div>
 
-          {/* GENERATE DATA */}
+              <div
+                style={{
+                  marginTop: "8px",
+                  textAlign: "center",
+                  fontSize: "13px",
+                  color: "#64748b",
+                }}
+              >
+                {uploadStep || "Processing policy..."}
+              </div>
+            </div>
+          )}
 
-          <button
-            className="generate-button"
-            onClick={
-              handleGenerateData
-            }
-            disabled={isGenerating}
-          >
 
-            {isGenerating
-              ? "Generating..."
-              : "Generate Synthetic Data"}
+{/* GENERATE DATA */}
 
-          </button>
+<div
+  style={{
+    display: "flex",
+    gap: "10px",
+    width: "100%",
+  }}
+>
+  <button
+    className="generate-button"
+    onClick={handleGenerateData}
+    disabled={isGenerating}
+    style={{ flex: 1 }}
+  >
+    {isGenerating
+      ? "Generating..."
+      : "Generate Synthetic Data"}
+  </button>
+
+  <button
+    className="generate-button"
+    onClick={handleDownloadSyntheticData}
+    style={{ flex: 1 }}
+  >
+    Download Synthetic Data
+  </button>
+</div>
+
+
+          {/* WORKFLOW */}
+
+          <section className="workflow-section">
+
+            <div className="workflow-heading">
+
+              <h3>
+                Policy Evaluation Workflow
+              </h3>
+
+              <p>
+                Follow each processing stage and download its Excel output.
+              </p>
+
+            </div>
+
+            <div className="workflow-scroll">
+
+              <div className="workflow-track">
+
+                {workflowSteps.map((step, index) => {
+                  const status = getWorkflowStatus(step.key);
+                  const statusColors = workflowStatusStyle[status];
+                  const isDownloadReady =
+                    workflowDownloadReady(status);
+
+                  return (
+                    <div
+                      key={step.key}
+                      className="workflow-step-item"
+                    >
+
+                      <div
+                        className="workflow-card"
+                        style={{
+                          borderColor: statusColors.border,
+                          background: statusColors.background,
+                        }}
+                      >
+
+                        <div className="workflow-card-top">
+
+                          <div
+                            className="workflow-number"
+                            style={{
+                              borderColor: statusColors.border,
+                              color: statusColors.color,
+                            }}
+                          >
+                            {status === "completed"
+                              ? "✓"
+                              : step.number}
+                          </div>
+
+                          <span
+                            className="workflow-status"
+                            style={{
+                              color: statusColors.color,
+                            }}
+                          >
+                            {workflowStatusLabel[status]}
+                          </span>
+
+                        </div>
+
+                        <strong className="workflow-title">
+                          {step.title}
+                        </strong>
+
+                        <p className="workflow-description">
+                          {step.description}
+                        </p>
+
+                        <button
+                          type="button"
+                          className="workflow-download"
+                          onClick={step.download}
+                          disabled={!isDownloadReady}
+                        >
+                          {isDownloadReady
+                            ? step.downloadLabel
+                            : "Available after completion"}
+                        </button>
+
+                      </div>
+
+                      {index < workflowSteps.length - 1 && (
+                        <div
+                          className="workflow-connector"
+                          style={{
+                            background:
+                              status === "completed"
+                                ? "#86efac"
+                                : "#cbd5e1",
+                          }}
+                        >
+                          <span
+                            style={{
+                              color:
+                                status === "completed"
+                                  ? "#16a34a"
+                                  : "#94a3b8",
+                            }}
+                          >
+                            ›
+                          </span>
+                        </div>
+                      )}
+
+                    </div>
+                  );
+                })}
+
+              </div>
+
+            </div>
+
+          </section>
 
 
           {/* DASHBOARD */}
@@ -781,6 +1207,7 @@ function App() {
                 loadDashboard
               }
             >
+
               Retry
             </button>
 
@@ -851,15 +1278,27 @@ function App() {
             EVALUATION HISTORY
           </button>
 
+
           <button
             type="button"
             className="header-button"
             onClick={
-              loadDashboard
+              handleDownloadPolicyResultsExcel
             }
           >
-            REFRESH
+            POLICY EXCEL
           </button>
+
+          <button
+            type="button"
+            className="header-button policy-pdf-button"
+            onClick={
+              handleDownloadPolicyPdf
+            }
+          >
+            POLICY PDF
+          </button>
+
 
 
           <button
@@ -871,18 +1310,6 @@ function App() {
           >
             UPLOAD PAGE
           </button>
-
-          <div className="run-info">
-
-            <span>
-              POLICY
-            </span>
-
-            <strong>
-              {currentRun?.policy_name || "-"}
-            </strong>
-
-          </div>
 
           <div className="run-info">
 

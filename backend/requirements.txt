@@ -7,3 +7,4 @@ openpyxl
 openai
 python-dotenv
 faker
+psycopg[binary]

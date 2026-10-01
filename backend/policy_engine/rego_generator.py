@@ -2,12 +2,17 @@ import json
 import re
 from pathlib import Path
 
+import pandas as pd
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 RULES_PATH = BASE_DIR / "extracted_text" / "rules.json"
 REGO_DIR = BASE_DIR / "policies" / "rego"
 REGO_PATH = REGO_DIR / "policy.rego"
+
+POLICY_RESULTS_EXCEL_PATH = (
+    REGO_DIR / "policy_results.xlsx"
+)
 
 
 def load_rules():
@@ -497,6 +502,90 @@ def save_rego(rego_policy: str):
         file.write(rego_policy)
 
 
+def save_policy_results_excel(rules: list[dict]):
+    """
+    Save the policy rule IDs and their outcomes
+    into a simple two-column Excel workbook.
+    """
+
+    REGO_DIR.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    rows = []
+
+    for rule in rules:
+
+        rows.append({
+            "Violation": get_display_rule_id(rule),
+            "Action": rule["outcome"],
+        })
+
+    dataframe = pd.DataFrame(
+        rows,
+        columns=[
+            "Violation",
+            "Action",
+        ],
+    )
+
+    with pd.ExcelWriter(
+        POLICY_RESULTS_EXCEL_PATH,
+        engine="openpyxl",
+    ) as writer:
+
+        dataframe.to_excel(
+            writer,
+            sheet_name="Policy Results",
+            index=False,
+        )
+
+        worksheet = writer.sheets[
+            "Policy Results"
+        ]
+
+        # Fixed column widths
+        worksheet.column_dimensions[
+            "A"
+        ].width = 20
+
+        worksheet.column_dimensions[
+            "B"
+        ].width = 15
+
+        # Header formatting
+        for cell in worksheet[1]:
+
+            cell.font = cell.font.copy(
+                bold=True
+            )
+
+            cell.alignment = cell.alignment.copy(
+                horizontal="center",
+                vertical="center",
+            )
+
+        # Center the data
+        for row in worksheet.iter_rows(
+            min_row=2
+        ):
+
+            for cell in row:
+
+                cell.alignment = cell.alignment.copy(
+                    horizontal="center",
+                    vertical="center",
+                )
+
+        worksheet.freeze_panes = "A2"
+
+    print(
+        f"Policy results Excel saved to: "
+        f"{POLICY_RESULTS_EXCEL_PATH}"
+    )
+
+
 def main():
 
     print("=" * 60)
@@ -518,6 +607,17 @@ def main():
 
     print(
         f"Rules loaded: {len(rules)}"
+    )
+
+    # =========================================================
+    # SAVE POLICY RESULTS EXCEL
+    # =========================================================
+
+    print()
+    print("Generating policy results Excel...")
+
+    save_policy_results_excel(
+        rules
     )
 
     # =========================================================
@@ -571,8 +671,10 @@ def main():
     )
 
     print()
-    print("Generated file:")
+    print("Generated files:")
+
     print(REGO_PATH)
+    print(POLICY_RESULTS_EXCEL_PATH)
 
     print("=" * 60)
 
