@@ -743,26 +743,144 @@ Do not invent legal requirements or additional policy obligations.
 REMEDIATION
 ==================================================
 
-`remediation` should describe the action required by the policy when
-the rule triggers.
+The `remediation` field must contain a clear, specific, actionable
+instruction describing how to resolve the violation when the rule triggers.
 
-Examples may include:
+Generate remediation using the rule's actual policy concepts and the
+provided fixed dataset columns.
 
-- remove the prohibited data
-- redact the sensitive value
-- obtain the required approval
-- remove the identifier before processing
+REMEDIATION RULES:
 
-However, ONLY include remediation that is supported by the policy.
+1. Identify the exact dataset column or policy concept responsible
+   for the violation.
 
-If the policy explicitly says:
+2. When a policy-mapped dataset column exists, explicitly mention
+   the corresponding column or data type in the remediation.
 
-"Block until removed or approved"
+3. Give a direct action, such as:
+   - Remove the prohibited value from the dataset.
+   - Remove the sensitive field before approved use.
+   - Redact the specific identifier.
+   - Mask the value if the policy permits masking.
+   - Obtain the required approval if the policy explicitly allows approval.
 
-the remediation should reflect removal or approval.
+4. Keep the remediation concise and specific to the rule.
 
-Do not invent remediation requirements that are absent from the policy.
+5. Do not generate vague instructions such as:
+   - Review the data.
+   - Ensure compliance.
+   - Handle sensitive information appropriately.
+   - Take necessary action.
 
+6. Do not generate generic remediation that could apply to every rule.
+
+7. Do not invent dataset columns. Use only the supplied fixed dataset
+   columns and their actual semantic mappings.
+
+8. Do not assume every PII or SPII value must be removed. Follow the
+   action required by the policy. If the policy explicitly requires
+   removal, recommend removal. If it requires masking or approval,
+   recommend that action instead.
+
+9. If the policy requires removal of a particular type of information,
+   name that information explicitly in the remediation.
+
+10. When a rule involves multiple columns, identify the relevant
+    column or columns and explain the required action for each.
+
+11. When the policy does not specify a remediation action, provide
+    only an action directly supported by the policy. Do not invent
+    additional compliance requirements.
+    
+    12. COLUMN-SPECIFIC REMEDIATION
+
+    Use the actual mapped dataset column to identify the affected
+    information. Translate technical column names into clear,
+    human-readable terms.
+
+    Examples:
+    - medical_condition → medical condition
+    - ni_number → National Insurance number
+    - customer_name → customer name
+    - bank_account → bank account number
+
+13. RULE-SPECIFIC REMEDIATION
+
+    Generate remediation independently for each extracted rule.
+    Do not reuse the same generic remediation across unrelated rules.
+    The action must correspond to the specific information and
+    requirement addressed by that rule.
+
+14. MULTIPLE TRIGGERED FIELDS
+
+    If a rule involves multiple mapped columns, mention each relevant
+    column and its corresponding remediation action.
+
+    Do not recommend action for a column that is not involved in
+    the rule's actual condition.
+
+15. DO NOT CONFUSE DETECTION WITH REMEDIATION
+
+    The presence of PII or SPII does not automatically mean the data
+    must be removed.
+
+    Follow the policy's stated requirement. Recommend removal,
+    masking, redaction, approval, or another action only when
+    supported by the policy.
+
+16. CONSISTENT AND CONCISE OUTPUT
+
+    Keep remediation to one or two short sentences.
+    State exactly what information needs attention and what action
+    is required.
+
+    Do not include lengthy explanations, policy summaries, or
+    unrelated security recommendations.
+
+17. UNMAPPED POLICY CONCEPTS
+
+    If a policy concept has no matching dataset column, do not invent
+    a column or claim that a specific field was detected.
+
+    Describe the action using the actual policy concept, only when
+    the policy supports that action.
+
+EXAMPLES:
+
+Rule: Health or medical information is classified as sensitive
+personal data.
+
+Mapped column: medical_condition
+
+Remediation:
+"Remove the medical condition from the dataset before approved use,
+as required by the policy."
+
+Rule: National Insurance numbers must not be present in approved data.
+
+Mapped column: ni_number
+
+Remediation:
+"Remove the National Insurance number from the dataset before
+approved use."
+
+Rule: Customer names must be removed before processing.
+
+Mapped column: customer_name
+
+Remediation:
+"Remove the customer name from the dataset before processing."
+
+Rule: Bank account information requires masking.
+
+Mapped column: bank_account
+
+Remediation:
+"Mask the bank account number before processing, as required by
+the policy."
+
+These examples demonstrate the required specificity. Always follow
+the actual policy document rather than copying an example blindly.
 ==================================================
 DUPLICATES
 ==================================================
@@ -913,6 +1031,15 @@ def build_user_prompt(policy_text: str, dataset_columns: list[str]) -> str:
     Do not invent rules.
 
     Do not add placeholder null fields.
+    
+    For every extracted rule, generate the `remediation` value using the
+    REMEDIATION instructions in the system prompt.
+
+   Use the supplied dataset column mappings to make remediation
+   specific to the information covered by the rule.
+
+  Keep the existing JSON schema exactly unchanged. Do not add new
+  fields or return remediation separately from the rule.
 
     Return ONLY the JSON object required by the schema.
     """)
