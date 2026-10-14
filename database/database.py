@@ -74,9 +74,15 @@ def initialize_database():
                     total_records INTEGER NOT NULL,
                     pass_count INTEGER NOT NULL,
                     flag_count INTEGER NOT NULL,
-                    block_count INTEGER NOT NULL
+                    block_count INTEGER NOT NULL,
+                    artifact_paths JSONB
                 )
             """)
+            
+            cursor.execute("""
+                ALTER TABLE runs
+                ADD COLUMN IF NOT EXISTS artifact_paths JSONB
+           """)
 
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS run_records (
@@ -97,8 +103,6 @@ def initialize_database():
 
     finally:
         conn.close()
-
-
 # ============================================================
 # SAVE RUN
 # ============================================================
@@ -295,7 +299,8 @@ def get_runs():
                     total_records,
                     pass_count,
                     flag_count,
-                    block_count
+                    block_count,
+                    artifact_paths
                 FROM runs
                 ORDER BY run_number DESC
             """)
@@ -341,7 +346,8 @@ def get_run(run_id):
                     total_records,
                     pass_count,
                     flag_count,
-                    block_count
+                    block_count,
+                    artifact_paths
                 FROM runs
                 WHERE id = %s
             """, (run_id,))
@@ -459,7 +465,37 @@ def get_run(run_id):
     finally:
         conn.close()
 
+# ============================================================
+# UPDATE RUN ARTIFACT PATHS
+# ============================================================
 
+def update_run_artifact_paths(
+    run_id,
+    artifact_paths,
+):
+    conn = get_connection()
+
+    try:
+        with conn.cursor() as cursor:
+
+            cursor.execute("""
+                UPDATE runs
+                SET
+                    artifact_paths = %s
+                WHERE id = %s
+            """, (
+                Jsonb(artifact_paths),
+                run_id,
+            ))
+
+        conn.commit()
+
+    except Exception:
+        conn.rollback()
+        raise
+
+    finally:
+        conn.close()
 # ============================================================
 # DIRECT TEST
 # ============================================================
@@ -471,3 +507,27 @@ if __name__ == "__main__":
     print("=" * 60)
     print("SUPABASE POSTGRESQL DATABASE INITIALIZED")
     print("=" * 60)
+
+# ============================================================
+# CREATE SIGNED DOWNLOAD URL
+# ============================================================
+
+def create_run_artifact_url(
+    storage_path,
+    expires_in=300,
+):
+    """
+    Create a temporary signed URL for a private run artifact.
+    """
+
+    response = (
+        supabase.storage
+        .from_(BUCKET_NAME)
+        .create_signed_url(
+            storage_path,
+            expires_in,
+            {"download": True},
+        )
+    )
+
+    return response["signedURL"]

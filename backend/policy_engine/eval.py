@@ -1,3 +1,4 @@
+
 import json
 import subprocess
 from pathlib import Path
@@ -21,6 +22,7 @@ if __import__("sys").platform.startswith("win"):
     OPA_PATH = BASE_DIR / "opa" / "opa.exe"
 else:
     OPA_PATH = BASE_DIR / "opa"
+
 REGO_PATH = (
     BASE_DIR
     / "policies"
@@ -28,20 +30,9 @@ REGO_PATH = (
     / "policy.rego"
 )
 
-RESULTS_DIR = (
-    BASE_DIR
-    / "evaluation_results"
-)
-
-RESULTS_PATH = (
-    RESULTS_DIR
-    / "results.json"
-)
-
-RESULTS_EXCEL_PATH = (
-    RESULTS_DIR
-    / "results.xlsx"
-)
+RESULTS_DIR = BASE_DIR / "evaluation_results"
+RESULTS_PATH = RESULTS_DIR / "results.json"
+RESULTS_EXCEL_PATH = RESULTS_DIR / "results.xlsx"
 
 EXPECTED_COLUMNS = [
     "record_id",
@@ -69,10 +60,7 @@ EXPECTED_COLUMNS = [
 
 
 def validate_paths():
-    """
-    Make sure all required files exist.
-    """
-
+    """Make sure all required files exist."""
     required_paths = {
         "Dataset": DATASET_PATH,
         "OPA": OPA_PATH,
@@ -80,7 +68,6 @@ def validate_paths():
     }
 
     for name, path in required_paths.items():
-
         if not path.exists():
             raise FileNotFoundError(
                 f"{name} not found: {path}"
@@ -88,38 +75,22 @@ def validate_paths():
 
 
 def load_dataset():
-    """
-    Load the synthetic Excel dataset.
-    """
-
+    """Load the synthetic Excel dataset."""
     print()
     print("Loading synthetic dataset...")
     print(f"Dataset: {DATASET_PATH}")
 
-    dataframe = pd.read_excel(
-        DATASET_PATH
-    )
+    dataframe = pd.read_excel(DATASET_PATH)
 
-    print(
-        f"Rows    : {len(dataframe)}"
-    )
-
-    print(
-        f"Columns : {len(dataframe.columns)}"
-    )
+    print(f"Rows    : {len(dataframe)}")
+    print(f"Columns : {len(dataframe.columns)}")
 
     return dataframe
 
 
 def validate_dataset_columns(dataframe):
-    """
-    Verify that the dataset contains exactly the
-    expected project columns.
-    """
-
-    actual_columns = list(
-        dataframe.columns
-    )
+    """Verify that the dataset contains the expected columns."""
+    actual_columns = list(dataframe.columns)
 
     missing_columns = [
         column
@@ -145,20 +116,11 @@ def validate_dataset_columns(dataframe):
             + ", ".join(unexpected_columns)
         )
 
-    print(
-        "Dataset column validation: PASSED"
-    )
+    print("Dataset column validation: PASSED")
 
 
 def clean_value(value):
-    """
-    Convert pandas/Excel values into JSON-safe values.
-
-    Empty Excel cells become empty strings.
-    Numeric values that represent whole numbers are converted
-    without the unnecessary .0 suffix.
-    """
-
+    """Convert pandas/Excel values into JSON-safe values."""
     if pd.isna(value):
         return ""
 
@@ -172,27 +134,17 @@ def clean_value(value):
 
 
 def row_to_input(row):
-    """
-    Convert one pandas row into the JSON object that
-    will be passed to OPA.
-    """
-
+    """Convert one pandas row into the JSON object passed to OPA."""
     record = {}
 
     for column in EXPECTED_COLUMNS:
-
-        record[column] = clean_value(
-            row[column]
-        )
+        record[column] = clean_value(row[column])
 
     return record
 
 
 def evaluate_record(record):
-    """
-    Evaluate one record using OPA.
-    """
-
+    """Evaluate one record using OPA."""
     input_json = json.dumps(
         record,
         ensure_ascii=False,
@@ -218,15 +170,12 @@ def evaluate_record(record):
     )
 
     if process.returncode != 0:
-
         raise RuntimeError(
             "OPA evaluation failed:\n"
             + process.stderr
         )
 
-    output = json.loads(
-        process.stdout
-    )
+    output = json.loads(process.stdout)
 
     try:
         result = (
@@ -239,28 +188,17 @@ def evaluate_record(record):
         IndexError,
         TypeError,
     ) as error:
-
         raise RuntimeError(
             "Unexpected OPA response:\n"
-            + json.dumps(
-                output,
-                indent=2,
-            )
+            + json.dumps(output, indent=2)
         ) from error
 
     return result
 
 
 def build_record_result(record, evaluation):
-    """
-    Combine the original record information with
-    the OPA evaluation result.
-    """
-
-    triggered_rules = evaluation.get(
-        "triggered_rules",
-        [],
-    )
+    """Combine the original record with the OPA evaluation result."""
+    triggered_rules = evaluation.get("triggered_rules", [])
 
     rule_ids = [
         rule["rule_id"]
@@ -283,12 +221,8 @@ def build_record_result(record, evaluation):
 
 
 def evaluate_dataset(dataframe):
-    """
-    Evaluate every dataset record through OPA.
-    """
-
+    """Evaluate every dataset record through OPA."""
     results = []
-
     total_records = len(dataframe)
 
     print()
@@ -300,12 +234,8 @@ def evaluate_dataset(dataframe):
         dataframe.iterrows(),
         start=1,
     ):
-
         record = row_to_input(row)
-
-        evaluation = evaluate_record(
-            record
-        )
+        evaluation = evaluate_record(record)
 
         result = build_record_result(
             record,
@@ -324,27 +254,21 @@ def evaluate_dataset(dataframe):
 
 
 def calculate_summary(results):
-    """
-    Calculate basic PASS / FLAG / BLOCK statistics.
-    """
-
+    """Calculate PASS / FLAG / BLOCK statistics."""
     total = len(results)
 
     pass_count = sum(
-        1
-        for result in results
+        1 for result in results
         if result["outcome"] == "PASS"
     )
 
     flag_count = sum(
-        1
-        for result in results
+        1 for result in results
         if result["outcome"] == "FLAG"
     )
 
     block_count = sum(
-        1
-        for result in results
+        1 for result in results
         if result["outcome"] == "BLOCK"
     )
 
@@ -359,18 +283,12 @@ def calculate_summary(results):
         "pass": pass_count,
         "flag": flag_count,
         "block": block_count,
-        "pass_rate": round(
-            pass_rate,
-            2,
-        ),
+        "pass_rate": round(pass_rate, 2),
     }
 
 
 def save_results(results, summary):
-    """
-    Save the complete evaluation results.
-    """
-
+    """Save the complete evaluation results to JSON."""
     RESULTS_DIR.mkdir(
         parents=True,
         exist_ok=True,
@@ -386,7 +304,6 @@ def save_results(results, summary):
         "w",
         encoding="utf-8",
     ) as file:
-
         json.dump(
             output,
             file,
@@ -395,63 +312,45 @@ def save_results(results, summary):
         )
 
     print()
-    print(
-        f"Results saved to: {RESULTS_PATH}"
-    )
+    print(f"Results saved to: {RESULTS_PATH}")
+
 
 def save_results_excel(results, summary):
     """
-    Save the complete synthetic dataset together with four clean
-    OPA-evaluation columns in one Excel sheet.
+    Save the synthetic dataset and OPA evaluation results
+    to an Excel workbook.
 
-    The four additional columns are:
-        1. Outcome
-        2. Triggered Rules
-        3. Explanation
-        4. Suggested Remediation
+    Sheets:
+        1. OPA Evaluation
+        2. Summary
+        3. Metadata
     """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
 
     RESULTS_DIR.mkdir(
         parents=True,
         exist_ok=True,
     )
 
-    # ---------------------------------------------------------
-    # Remediation by dataset column
-    # ---------------------------------------------------------
+    created_at = datetime.now(
+        ZoneInfo("Asia/Kolkata")
+    )
 
-    remediation_by_column = {
-        "customer_name": "Remove or mask the customer's full name.",
-        "email": "Remove or mask the personal email address.",
-        "phone": "Remove or mask the phone number.",
-        "address": "Remove or generalize the postal/home address.",
-        "dob": "Remove or generalize the date of birth.",
-        "gender": "Remove or generalize gender information where required.",
-        "passport_number": "Remove the passport number completely.",
-        "ni_number": "Remove the National Insurance number completely.",
-        "credit_card_number": "Remove or mask the payment card number.",
-        "bank_account": "Remove or mask the bank account number.",
-        "medical_condition": "Remove the medical information.",
-        "ethnicity": "Remove the ethnicity information.",
-        "religion": "Remove the religion or belief information.",
-        "political_view": "Remove the political opinion information.",
-        "employee_id": "Remove or mask the employee identifier.",
-        "department": "Remove or generalize the department when it contributes to identification.",
-        "job_role": "Remove or generalize the job role when it contributes to identification.",
-        "customer_id": "Remove or mask the customer identifier.",
-        "ip_address": "Remove or mask the IP address.",
-    }
-
-    # ---------------------------------------------------------
-    # Build one flat row per synthetic-data record
-    # ---------------------------------------------------------
+    created_date = created_at.strftime("%d-%m-%Y")
+    created_time = created_at.strftime("%I:%M:%S %p")
+    created_datetime = created_at.strftime(
+        "%d-%m-%Y %I:%M:%S %p"
+    )
 
     rows = []
 
     for result in results:
-
         input_record = result.get("input", {})
-        triggered_rules = result.get("triggered_rules", []) or []
+
+        triggered_rules = (
+            result.get("triggered_rules", []) or []
+        )
 
         rule_ids = []
         explanations = []
@@ -459,7 +358,6 @@ def save_results_excel(results, summary):
         seen_remediations = set()
 
         for rule in triggered_rules:
-
             rule_id = str(
                 rule.get("rule_id", "")
             ).strip()
@@ -478,51 +376,30 @@ def save_results_excel(results, summary):
                     else explanation
                 )
 
-            columns = rule.get(
-                "columns",
-                [],
-            )
+            # Use remediation stored in the triggered rule.
+            # Do not infer remediation from the dataset column.
+            remediation = str(
+                rule.get("remediation") or ""
+            ).strip()
 
-            if not isinstance(columns, list):
-                columns = [columns]
+            if (
+                remediation
+                and remediation not in seen_remediations
+            ):
+                seen_remediations.add(remediation)
 
-            for column in columns:
-
-                column = str(column).strip()
-
-                if (
-                    not column
-                    or column not in input_record
-                    or column not in remediation_by_column
-                    or str(input_record.get(column, "")).strip() == ""
-                ):
-                    continue
-
-                if column in seen_remediations:
-                    continue
-
-                seen_remediations.add(column)
                 remediation_items.append(
-                    remediation_by_column[column]
+                    f"{rule_id}: {remediation}"
+                    if rule_id
+                    else remediation
                 )
 
         row = {}
 
-        # Entire original synthetic dataset
         for column in EXPECTED_COLUMNS:
-            row[column] = input_record.get(
-                column,
-                "",
-            )
+            row[column] = input_record.get(column, "")
 
-        # -----------------------------------------------------
-        # Exactly four additional evaluation columns
-        # -----------------------------------------------------
-
-        row["Outcome"] = result.get(
-            "outcome",
-            "",
-        )
+        row["Outcome"] = result.get("outcome", "")
 
         row["Triggered Rules"] = (
             ", ".join(rule_ids)
@@ -539,7 +416,11 @@ def save_results_excel(results, summary):
         row["Suggested Remediation"] = (
             " | ".join(remediation_items)
             if remediation_items
-            else "No remediation required."
+            else (
+                "No remediation provided for the triggered rules."
+                if triggered_rules
+                else "No remediation required."
+            )
         )
 
         rows.append(row)
@@ -556,10 +437,6 @@ def save_results_excel(results, summary):
         columns=result_columns,
     )
 
-    # ---------------------------------------------------------
-    # SUMMARY SHEET
-    # ---------------------------------------------------------
-
     summary_dataframe = pd.DataFrame(
         [
             ["Total Records", summary["total_records"]],
@@ -571,15 +448,25 @@ def save_results_excel(results, summary):
         columns=["Metric", "Value"],
     )
 
-    # ---------------------------------------------------------
-    # WRITE WORKBOOK
-    # ---------------------------------------------------------
+    metadata_dataframe = pd.DataFrame({
+        "Property": [
+            "Created Date",
+            "Created Time",
+            "Created Date & Time",
+            "Timezone",
+        ],
+        "Value": [
+            created_date,
+            created_time,
+            created_datetime,
+            "Asia/Kolkata (IST)",
+        ],
+    })
 
     with pd.ExcelWriter(
         RESULTS_EXCEL_PATH,
         engine="openpyxl",
     ) as writer:
-
         results_dataframe.to_excel(
             writer,
             sheet_name="OPA Evaluation",
@@ -592,13 +479,13 @@ def save_results_excel(results, summary):
             index=False,
         )
 
-    # ---------------------------------------------------------
-    # FORMAT WORKBOOK
-    # ---------------------------------------------------------
+        metadata_dataframe.to_excel(
+            writer,
+            sheet_name="Metadata",
+            index=False,
+        )
 
-    workbook = load_workbook(
-        RESULTS_EXCEL_PATH
-    )
+    workbook = load_workbook(RESULTS_EXCEL_PATH)
 
     header_fill = PatternFill(
         fill_type="solid",
@@ -643,29 +530,20 @@ def save_results_excel(results, summary):
         ),
     }
 
-    # ---------------------------------------------------------
-    # OPA EVALUATION SHEET
-    # ---------------------------------------------------------
-
     worksheet = workbook["OPA Evaluation"]
 
     worksheet.freeze_panes = "A2"
     worksheet.auto_filter.ref = worksheet.dimensions
 
-    # Default readable widths for all columns
     for column_index, column in enumerate(
         result_columns,
         start=1,
     ):
         letter = get_column_letter(column_index)
 
-        if column in {
-            "Outcome",
-        }:
+        if column == "Outcome":
             width = 14
-        elif column in {
-            "Triggered Rules",
-        }:
+        elif column == "Triggered Rules":
             width = 28
         elif column in {
             "Explanation",
@@ -687,7 +565,6 @@ def save_results_excel(results, summary):
         cell.alignment = header_alignment
 
     for row in worksheet.iter_rows(min_row=2):
-
         for cell in row:
             cell.alignment = body_alignment
             cell.border = thin_border
@@ -703,15 +580,10 @@ def save_results_excel(results, summary):
 
     worksheet.row_dimensions[1].height = 34
 
-    # ---------------------------------------------------------
-    # SUMMARY SHEET
-    # ---------------------------------------------------------
-
     worksheet = workbook["Summary"]
 
     worksheet.freeze_panes = "A2"
     worksheet.auto_filter.ref = worksheet.dimensions
-
     worksheet.column_dimensions["A"].width = 24
     worksheet.column_dimensions["B"].width = 22
 
@@ -725,110 +597,54 @@ def save_results_excel(results, summary):
             cell.alignment = body_alignment
             cell.border = thin_border
 
-    workbook.save(
-        RESULTS_EXCEL_PATH
-    )
+    worksheet = workbook["Metadata"]
+
+    worksheet.freeze_panes = "A2"
+    worksheet.column_dimensions["A"].width = 25
+    worksheet.column_dimensions["B"].width = 35
+
+    for cell in worksheet[1]:
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = header_alignment
+
+    for row in worksheet.iter_rows(min_row=2):
+        for cell in row:
+            cell.alignment = body_alignment
+            cell.border = thin_border
+
+    worksheet.row_dimensions[1].height = 25
+
+    workbook.save(RESULTS_EXCEL_PATH)
 
     print(
-        f"Clean OPA evaluation Excel saved to: "
+        "Clean OPA evaluation Excel saved to: "
         f"{RESULTS_EXCEL_PATH}"
     )
 
+
 def main():
-
-    print("=" * 60)
-    print("POLICY-AS-CODE DATASET EVALUATOR")
-    print("=" * 60)
-
-    # ---------------------------------------------------------
-    # Validate project files
-    # ---------------------------------------------------------
-
-    print()
-    print("Validating required files...")
-
+    """Run the complete evaluation workflow."""
     validate_paths()
 
-    print(
-        "Required file validation: PASSED"
-    )
-
-    # ---------------------------------------------------------
-    # Load dataset
-    # ---------------------------------------------------------
-
     dataframe = load_dataset()
+    validate_dataset_columns(dataframe)
 
-    # ---------------------------------------------------------
-    # Validate columns
-    # ---------------------------------------------------------
+    results = evaluate_dataset(dataframe)
+    summary = calculate_summary(results)
 
-    print()
-    print("Validating dataset columns...")
-
-    validate_dataset_columns(
-        dataframe
-    )
-
-    # ---------------------------------------------------------
-    # Evaluate records
-    # ---------------------------------------------------------
-
-    results = evaluate_dataset(
-        dataframe
-    )
-
-    # ---------------------------------------------------------
-    # Summary
-    # ---------------------------------------------------------
-
-    summary = calculate_summary(
-        results
-    )
-
-    # ---------------------------------------------------------
-    # Save
-    # ---------------------------------------------------------
-
-    save_results(
-        results,
-        summary,
-    )
-    
-    save_results_excel(
-    results,
-    summary,
-)
-    # ---------------------------------------------------------
-    # Print summary
-    # ---------------------------------------------------------
+    save_results(results, summary)
+    save_results_excel(results, summary)
 
     print()
     print("=" * 60)
-    print("EVALUATION COMPLETE")
+    print("EVALUATION SUMMARY")
     print("=" * 60)
-
-    print(
-        f"Total records : {summary['total_records']}"
-    )
-
-    print(
-        f"PASS          : {summary['pass']}"
-    )
-
-    print(
-        f"FLAG          : {summary['flag']}"
-    )
-
-    print(
-        f"BLOCK         : {summary['block']}"
-    )
-
-    print(
-        f"Pass rate     : {summary['pass_rate']}%"
-    )
-
-    print("=" * 60)
+    print(f"Total records : {summary['total_records']}")
+    print(f"PASS          : {summary['pass']}")
+    print(f"FLAG          : {summary['flag']}")
+    print(f"BLOCK         : {summary['block']}")
+    print(f"Pass rate     : {summary['pass_rate']}%")
 
 
 if __name__ == "__main__":
