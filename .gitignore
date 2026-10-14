@@ -74,3 +74,5 @@ policies/AI Training Data PII Policies.pdf
 # Generated policy/data files
 extracted_text/*.json
 synthetic_data/synthetic_dataset.xlsxopa.exe
+opa.exe
+synthetic_data/synthetic_dataset.xlsx
